@@ -24,7 +24,7 @@ cd frontend
 npm install
 npm run dev
 ```
-Frontend will run on    
+Frontend will run on VITE_API_URL=http://localhost:4000
 
 ## Notes
 - The frontend fetches /api/staff and /api/tasks from http://localhost:4000. Make sure backend is running.
