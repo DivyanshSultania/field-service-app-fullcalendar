@@ -1,0 +1,22 @@
+{
+  "name": "field-service-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@fullcalendar/react": "^6.1.8",
+    "@fullcalendar/daygrid": "^6.1.8",
+    "@fullcalendar/timegrid": "^6.1.8",
+    "@fullcalendar/interaction": "^6.1.8",
+    "dayjs": "^1.11.9"
+  },
+  "devDependencies": {
+    "vite": "^5.1.0"
+  }
+}
