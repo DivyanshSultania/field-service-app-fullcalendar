@@ -5,6 +5,8 @@ import StaffManagement from './components/StaffManagement';
 import TeamManagement from './components/TeamManagement';
 import ClientsManagement from './components/ClientsManagement';
 
+const VITE_KEY = import.meta.env.VITE_API_URL;
+
 export default function App() {
   const [staff, setStaff] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -14,10 +16,10 @@ export default function App() {
   const [view, setView] = useState('calendar'); // Default view is 'calendar'
 
   useEffect(() => {
-    fetch('http://localhost:4000/api/staff').then(r=>r.json()).then(setStaff).catch(()=>{});
-    fetch('http://localhost:4000/api/tasks').then(r=>r.json()).then(setTasks).catch(()=>{});
-    fetch('http://localhost:4000/api/teams').then(r => r.json()).then(setTeams).catch(() => {});
-    fetch('http://localhost:4000/api/clients').then(r => r.json()).then(setClients).catch(() => {});
+    fetch(`${VITE_KEY}/api/staff`).then(r=>r.json()).then(setStaff).catch(()=>{});
+    fetch(`${VITE_KEY}/api/tasks`).then(r=>r.json()).then(setTasks).catch(()=>{});
+    fetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams).catch(() => {});
+    fetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
   }, []);
   
   // function renderView() {

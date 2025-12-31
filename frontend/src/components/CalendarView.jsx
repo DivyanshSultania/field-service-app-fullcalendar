@@ -124,19 +124,22 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
   const circleRef = useRef(null);
   const [locationLoadingDelete, setLocationLoadingDelete] = useState({});
 
+  const VITE_KEY = import.meta.env.VITE_API_URL;
+
+  console.log('-------VITE_KEY-------', VITE_KEY);
 
   // Fetch teams, staff, clients, locations
   useEffect(() => {
-    fetch('http://localhost:4000/api/teams').then(r => r.json()).then(setTeams).catch(() => {});
-    fetch('http://localhost:4000/api/staff').then(r => r.json()).then(setStaffs).catch(() => {});
-    fetch('http://localhost:4000/api/clients').then(r => r.json()).then(setClients).catch(() => {});
-    fetch('http://localhost:4000/api/locations').then(r => r.json()).then(setLocations).catch(() => {});
-    fetch('http://localhost:4000/api/team_members').then(r => r.json()).then(setTeamMembers).catch(() => {});
-    fetch('http://localhost:4000/api/tasks').then(r => r.json()).then(setTasks).catch(() => {});
+    fetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams).catch(() => {});
+    fetch(`${VITE_KEY}/api/staff`).then(r => r.json()).then(setStaffs).catch(() => {});
+    fetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
+    fetch(`${VITE_KEY}/api/locations`).then(r => r.json()).then(setLocations).catch(() => {});
+    fetch(`${VITE_KEY}/api/team_members`).then(r => r.json()).then(setTeamMembers).catch(() => {});
+    fetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
 
     const listener = () => {
       // Reload tasks using your existing function
-      fetch('http://localhost:4000/api/tasks').then(r => r.json()).then(setTasks).catch(() => {});
+      fetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
     };
   
     window.addEventListener("refreshCalendar", listener);
@@ -207,7 +210,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
   
       setTravelInfo({ distance_km: distKm, duration_min: durMin, from_location: prev.location_id });
 
-      await fetch(`http://localhost:4000/api/tasks/${task.id}`, {
+      await fetch(`${VITE_KEY}/api/tasks/${task.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...task, travel_from: prev.location_id, travel_dist: distKm, travel_duration: durMin })
@@ -341,7 +344,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     };
   
     try {
-      const res = await fetch('http://localhost:4000/api/tasks', {
+      const res = await fetch(`${VITE_KEY}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -349,7 +352,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
       const created = await res.json();
   
       // Fetch enriched task (joins staff, client, location, team)
-      const fullRes = await fetch(`http://localhost:4000/api/tasks/${created.id}`);
+      const fullRes = await fetch(`${VITE_KEY}/api/tasks/${created.id}`);
       const fullTask = await fullRes.json();
   
       // Add to FullCalendar
@@ -732,7 +735,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
         comment: locationComment,
       };
     
-      fetch('http://localhost:4000/api/locations', {
+      fetch(`${VITE_KEY}/api/locations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(loc),
@@ -740,7 +743,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
         .then(r => r.json())
         .then(newLoc => {
           handleLocationModalAdd(newLoc);
-          return fetch('http://localhost:4000/api/locations');
+          return fetch(`${VITE_KEY}/api/locations`);
         })
         .then(r => r.json())
         .then(setLocations)
@@ -761,9 +764,9 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     async function handleDeleteLocation(locId) {
       setLocationLoadingDelete(ld => ({...ld, [locId]: true}));
       try {
-        await fetch(`http://localhost:4000/api/locations/${locId}`, { method: 'DELETE' });
+        await fetch(`${VITE_KEY}/api/locations/${locId}`, { method: 'DELETE' });
         // Refresh locations list
-        fetch('http://localhost:4000/api/locations')
+        fetch(`${VITE_KEY}/api/locations`)
           .then(r => r.json())
           .then(setLocations)
           .catch(()=>{});
@@ -775,7 +778,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
     useEffect(() => {
       if (locationModalOpen) {
-        fetch('http://localhost:4000/api/locations')
+        fetch(`${VITE_KEY}/api/locations`)
           .then(r => r.json())
           .then(setLocations)
           .catch(e => console.error('Fetch locations error', e));
@@ -920,7 +923,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     debugger;
     // if (currentTask && currentTask.id) {
     if (taskObj && taskObj.id) {
-      fetch(`http://localhost:4000/api/task_instructions/${taskObj.id}`)
+      fetch(`${VITE_KEY}/api/task_instructions/${taskObj.id}`)
         .then(r => r.json())
         .then(list => {
           if (Array.isArray(list)) {
@@ -931,7 +934,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
         })
         .catch(() => setEditInstructions([]));
 
-        fetch(`http://localhost:4000/api/task_comments/${taskObj.id}`)
+        fetch(`${VITE_KEY}/api/task_comments/${taskObj.id}`)
         .then(r => r.json())
         .then(list => {
           if (Array.isArray(list)) {
@@ -964,7 +967,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
   function closeEditTaskModal() {
     setEditModalOpen(false);
-    fetch('http://localhost:4000/api/tasks').then(r => r.json()).then(taskResp => {
+    fetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(taskResp => {
       setTasks(taskResp);
 
       updateCalendarView();
@@ -990,7 +993,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     function handleSaveShiftModal() {
       // debugger;
       setManageLoading(true);
-      fetch(`http://localhost:4000/api/tasks/${currentTask.id}`, {
+      fetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(currentTask),
@@ -1000,7 +1003,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
         computeAndSaveTravelDistance(currentTask);
         setEditModalOpen(false);
 
-        fetch('http://localhost:4000/api/tasks').then(r => r.json()).then(taskResp => {
+        fetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(taskResp => {
           setTasks(taskResp);
     
           updateCalendarView();
@@ -1050,7 +1053,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
       if (!currentTask || !currentTask.id) return;
       const payload = { task_id: currentTask.id, ques: editInstructionInput, resp_type: editInstructionInputRespType };
       try {
-        const res = await fetch(`http://localhost:4000/api/task_instructions`, {
+        const res = await fetch(`${VITE_KEY}/api/task_instructions`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
         });
         const newInst = await res.json();
@@ -1072,7 +1075,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
       // reload from server to reset any temporary edits
       if (currentTask && currentTask.id) {
         debugger;
-        fetch(`http://localhost:4000/api/task_instructions/${currentTask.id}`)
+        fetch(`${VITE_KEY}/api/task_instructions/${currentTask.id}`)
           .then(r => r.json())
           .then(list => setEditInstructions(list || []))
           .catch(() => {});
@@ -1087,7 +1090,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
       const inst = editInstructions.find(i => i.id === id);
       if (!inst) return;
       try {
-        const res = await fetch(`http://localhost:4000/api/task_instructions/${id}`, {
+        const res = await fetch(`${VITE_KEY}/api/task_instructions/${id}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(inst)
         });
         const updated = await res.json();
@@ -1102,7 +1105,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     async function handleDeleteInstruction(id) {
       if (!confirm('Delete instruction?')) return;
       try {
-        await fetch(`http://localhost:4000/api/task_instructions/${id}`, { method: 'DELETE' });
+        await fetch(`${VITE_KEY}/api/task_instructions/${id}`, { method: 'DELETE' });
         setEditInstructions(arr => arr.filter(i => i.id !== id));
       } catch (err) {
         console.error('Delete instruction error', err);
@@ -1121,7 +1124,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
     // Load recurring children for roster tab
     async function loadRecurringChildren(taskId) {
-      const res = await fetch(`http://localhost:4000/api/recurring/${taskId}`);
+      const res = await fetch(`${VITE_KEY}/api/recurring/${taskId}`);
       const data = await res.json();
       setRecurringSettings(data.row || []);
       setChildTasks(data.children || []);
@@ -1696,7 +1699,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                             const started = new Date().toISOString();
                             handleShiftUpdate({ started_at: started });
                             try {
-                              await fetch(`http://localhost:4000/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, started_at: started}) });
+                              await fetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, started_at: started}) });
                             } catch(e){ console.error('start shift save error', e); }
 
                             // start timer UI
@@ -1721,7 +1724,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                               const stopped = new Date().toISOString();
                               handleShiftUpdate({ stopped_at: stopped });
                               try {
-                                await fetch(`http://localhost:4000/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, stopped_at: stopped}) });
+                                await fetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, stopped_at: stopped}) });
                               } catch(e){ console.error('end shift save error', e); }
                               if (shiftTimerRef.current) { clearInterval(shiftTimerRef.current); shiftTimerRef.current = null; }
                             }}>End Shift</button>
@@ -1803,7 +1806,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                           //     setTravelInfo({ distance_km: distKm, duration_min: durMin, from_location: prev.location_id });
 
                           //     // persist to backend
-                          //     await fetch(`http://localhost:4000/api/tasks/${currentTask.id}`, {
+                          //     await fetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
                           //       method:'PUT', headers:{'Content-Type':'application/json'},
                           //       body: JSON.stringify({ ...currentTask, travel_from: prev.location_id, travel_dist: Number(distKm), travel_duration: Number(durMin) })
                           //     });
@@ -1837,7 +1840,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                           <button className="btn" onClick={async ()=>{
                             // fetch all comments and filter
                             try {
-                              const res = await fetch(`http://localhost:4000/api/task_comments/${currentTask.id}`);
+                              const res = await fetch(`${VITE_KEY}/api/task_comments/${currentTask.id}`);
                               const all = await res.json();
                               setTaskMessages(all);
                             } catch(e){ console.error('fetch comments', e); }
@@ -1888,7 +1891,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                             const selectEl = document.getElementById('newMessageStaffSelect');
                             const selectedStaffId = selectEl ? selectEl.value : currentTask.staff_id;
                             const payload = { task_id: currentTask.id, comment: newMessageText.trim(), is_read: 0, staff_id: selectedStaffId || currentTask.staff_id };
-                            const res = await fetch('http://localhost:4000/api/task_comments', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+                            const res = await fetch(`${VITE_KEY}/api/task_comments`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                             const created = await res.json();
                             setTaskMessages(arr => [...arr, created]);
                             setNewMessageText('');

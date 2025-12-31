@@ -1,12 +1,22 @@
-const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const { v4: uuidv4 } = require('uuid');
-const dayjs = require("dayjs");
+import express from 'express';
+import sqlite3 from 'sqlite3';
+import path from 'path';
+import bodyParser from 'body-parser';
+import cors from 'cors';
+import { v4 as uuidv4 } from 'uuid';
+import dayjs from "dayjs";
+
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+console.log('------dir name-------', __dirname);
 
 const DB_PATH = path.join(__dirname, 'data.sqlite');
+
+console.log('------DB_PATH-------', DB_PATH);
 
 const app = express();
 app.use(cors());

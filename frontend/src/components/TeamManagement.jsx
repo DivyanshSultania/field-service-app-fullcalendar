@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom';
 
+const VITE_KEY = import.meta.env.VITE_API_URL;
+
 export default function TeamManagement() {
   const [teams, setTeams] = useState([]);
   const [staff, setStaff] = useState([]);
@@ -16,8 +18,8 @@ export default function TeamManagement() {
   const [editId, setEditId] = useState(null);
 
   useEffect(() => {
-    fetch('http://localhost:4000/api/teams').then(r => r.json()).then(setTeams);
-    fetch('http://localhost:4000/api/staff').then(r => r.json()).then(setStaff);
+    fetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams);
+    fetch(`${VITE_KEY}/api/staff`).then(r => r.json()).then(setStaff);
   }, []);
 
   const handleAdd = () => {
@@ -27,7 +29,7 @@ export default function TeamManagement() {
   };
 
   const handleEdit = async (id) => {
-    const res = await fetch(`http://localhost:4000/api/teams/${id}`);
+    const res = await fetch(`${VITE_KEY}/api/teams/${id}`);
     const data = await res.json();
     setEditMode(true);
     setEditId(id);
@@ -44,8 +46,8 @@ export default function TeamManagement() {
   const handleSave = async (e) => {
     e.preventDefault();
     const url = editMode
-      ? `http://localhost:4000/api/teams/${editId}`
-      : 'http://localhost:4000/api/teams';
+      ? `${VITE_KEY}/api/teams/${editId}`
+      : `${VITE_KEY}/api/teams`;
     const method = editMode ? 'PUT' : 'POST';
 
     const res = await fetch(url, {
@@ -66,7 +68,7 @@ export default function TeamManagement() {
 
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this team?')) return;
-    await fetch(`http://localhost:4000/api/teams/${id}`, { method: 'DELETE' });
+    await fetch(`${VITE_KEY}/api/teams/${id}`, { method: 'DELETE' });
     setTeams(prev => prev.filter(t => t.id !== id));
   };
 

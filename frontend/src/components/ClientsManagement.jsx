@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 
+const VITE_KEY = import.meta.env.VITE_API_URL;
+
 export default function ClientsManagement() {
   const [clients, setClients] = useState([]);
   const [showModal, setShowModal] = useState(false);
@@ -20,7 +22,7 @@ export default function ClientsManagement() {
 
   // Fetch all clients
   useEffect(() => {
-    fetch('http://localhost:4000/api/clients')
+    fetch(`${VITE_KEY}/api/clients`)
       .then(r => r.json())
       .then(setClients)
       .catch(err => console.error('Error loading clients', err));
@@ -67,8 +69,8 @@ export default function ClientsManagement() {
   const handleSubmit = (e) => {
     e.preventDefault();
     const url = editMode
-      ? `http://localhost:4000/api/clients/${selectedClient.id}`
-      : `http://localhost:4000/api/clients`;
+      ? `${VITE_KEY}/api/clients/${selectedClient.id}`
+      : `${VITE_KEY}/api/clients`;
     const method = editMode ? 'PUT' : 'POST';
 
     fetch(url, {
@@ -90,7 +92,7 @@ export default function ClientsManagement() {
 
   const handleDelete = (id) => {
     if (!window.confirm('Delete this client?')) return;
-    fetch(`http://localhost:4000/api/clients/${id}`, { method: 'DELETE' })
+    fetch(`${VITE_KEY}/api/clients/${id}`, { method: 'DELETE' })
       .then(() => setClients(prev => prev.filter(c => c.id !== id)))
       .catch(err => console.error('Delete failed', err));
   };

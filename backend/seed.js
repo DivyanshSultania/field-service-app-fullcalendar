@@ -1,9 +1,9 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
+import sqlite3 from 'sqlite3';
+import path from 'path';
+import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
 
-const DB_PATH = path.join(__dirname, 'data.sqlite');
+const DB_PATH = path.join(path.dirname(import.meta.url), 'data.sqlite');
 const db = new sqlite3.Database(DB_PATH);
 
 // Simple helper to run

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 
+const VITE_KEY = import.meta.env.VITE_API_URL;
+
 export default function StaffManagement() {
   const [staff, setStaff] = useState([]);
   const [showModal, setShowModal] = useState(false);
@@ -17,7 +19,7 @@ export default function StaffManagement() {
   });
 
   useEffect(() => {
-    fetch('http://localhost:4000/api/staff')
+    fetch(`${VITE_KEY}/api/staff`)
       .then(r => r.json())
       .then(setStaff)
       .catch(err => console.error('Error loading staff', err));
@@ -25,7 +27,7 @@ export default function StaffManagement() {
 
   function handleDelete(id) {
     if (!window.confirm('Are you sure you want to delete this staff member?')) return;
-    fetch(`http://localhost:4000/api/staff/${id}`, { method: 'DELETE' })
+    fetch(`${VITE_KEY}/api/staff/${id}`, { method: 'DELETE' })
       .then(() => setStaff(prev => prev.filter(s => s.id !== id)))
       .catch(err => console.error('Delete failed', err));
   }
@@ -73,7 +75,7 @@ export default function StaffManagement() {
   function handleSubmit(e) {
     e.preventDefault();
     if (editMode) {
-      fetch(`http://localhost:4000/api/staff/${editStaffId}`, {
+      fetch(`${VITE_KEY}/api/staff/${editStaffId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newStaff),
@@ -102,7 +104,7 @@ export default function StaffManagement() {
           alert('Failed to update staff member');
         });
     } else {
-      fetch('http://localhost:4000/api/staff', {
+      fetch(`${VITE_KEY}/api/staff`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newStaff),

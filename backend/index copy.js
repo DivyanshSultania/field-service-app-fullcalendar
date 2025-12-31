@@ -681,7 +681,7 @@ genericCrud('images', ['task_id', 'staff_id', 'images']);
 genericCrud('task_instructions', ['task_id', 'ques', 'resp_type', 'reply', 'replied_at']);
 genericCrud('task_team_members', ['team_id', 'task_id', 'staff_id']);
 
-const PORT = process.env.PORT || 4000;
+const PORT = import.meta.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log('Backend running on port', PORT);
 });

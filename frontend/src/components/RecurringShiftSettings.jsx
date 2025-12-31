@@ -13,6 +13,8 @@ const DAYS = [
   { key: "Su", value: 0 }
 ];
 
+const VITE_KEY = import.meta.env.VITE_API_URL;
+
 export default function RecurringShiftSettings({ task }) {
   const [frequency, setFrequency] = useState(1);
   const [selectedDays, setSelectedDays] = useState([]);
@@ -108,12 +110,12 @@ export default function RecurringShiftSettings({ task }) {
 
   // Fetch teams, staff, clients, locations
   useEffect(() => {
-    fetch('http://localhost:4000/api/teams').then(r => r.json()).then(setTeams).catch(() => {});
-    fetch('http://localhost:4000/api/staff').then(r => r.json()).then(setStaffs).catch(() => {});
-    fetch('http://localhost:4000/api/clients').then(r => r.json()).then(setClients).catch(() => {});
-    fetch('http://localhost:4000/api/locations').then(r => r.json()).then(setLocations).catch(() => {});
-    fetch('http://localhost:4000/api/team_members').then(r => r.json()).then(setTeamMembers).catch(() => {});
-    // fetch('http://localhost:4000/api/tasks').then(r => r.json()).then(setTasks).catch(() => {});
+    fetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams).catch(() => {});
+    fetch(`${VITE_KEY}/api/staff`).then(r => r.json()).then(setStaffs).catch(() => {});
+    fetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
+    fetch(`${VITE_KEY}/api/locations`).then(r => r.json()).then(setLocations).catch(() => {});
+    fetch(`${VITE_KEY}/api/team_members`).then(r => r.json()).then(setTeamMembers).catch(() => {});
+    // fetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
 
     return;
   }, []);
@@ -143,7 +145,7 @@ export default function RecurringShiftSettings({ task }) {
 
         await Promise.all(
           selectedRecurringIds.map((rid) =>
-            fetch(`http://localhost:4000/api/recurring_setting/${rid}/tasks`, {
+            fetch(`${VITE_KEY}api/recurring_setting/${rid}/tasks`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -319,7 +321,7 @@ export default function RecurringShiftSettings({ task }) {
 
         await Promise.all(
           selectedRecurringIds.map((rid) =>
-            fetch(`http://localhost:4000/api/recurring_setting/${rid}/tasks`, {
+            fetch(`${VITE_KEY}/api/recurring_setting/${rid}/tasks`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -518,7 +520,7 @@ export default function RecurringShiftSettings({ task }) {
 
         await Promise.all(
           selectedRecurringIds.map((rid) =>
-            fetch(`http://localhost:4000/api/recurring_setting/${rid}/tasks`, {
+            fetch(`${VITE_KEY}/api/recurring_setting/${rid}/tasks`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -560,7 +562,7 @@ export default function RecurringShiftSettings({ task }) {
         comment: locationComment,
       };
     
-      fetch('http://localhost:4000/api/locations', {
+      fetch(`${VITE_KEY}/api/locations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(loc),
@@ -568,7 +570,7 @@ export default function RecurringShiftSettings({ task }) {
         .then(r => r.json())
         .then(newLoc => {
           handleLocationModalAdd(newLoc);
-          return fetch('http://localhost:4000/api/locations');
+          return fetch(`${VITE_KEY}/api/locations`);
         })
         .then(r => r.json())
         .then(setLocations)
@@ -589,9 +591,9 @@ export default function RecurringShiftSettings({ task }) {
     async function handleDeleteLocation(locId) {
       setLocationLoadingDelete(ld => ({...ld, [locId]: true}));
       try {
-        await fetch(`http://localhost:4000/api/locations/${locId}`, { method: 'DELETE' });
+        await fetch(`${VITE_KEY}/api/locations/${locId}`, { method: 'DELETE' });
         // Refresh locations list
-        fetch('http://localhost:4000/api/locations')
+        fetch(`${VITE_KEY}/api/locations`)
           .then(r => r.json())
           .then(setLocations)
           .catch(()=>{});
@@ -603,7 +605,7 @@ export default function RecurringShiftSettings({ task }) {
 
     useEffect(() => {
       if (locationModalOpen) {
-        fetch('http://localhost:4000/api/locations')
+        fetch(`${VITE_KEY}/api/locations`)
           .then(r => r.json())
           .then(setLocations)
           .catch(e => console.error('Fetch locations error', e));
@@ -779,7 +781,7 @@ export default function RecurringShiftSettings({ task }) {
   
         await Promise.all(
           selectedRecurringIds.map((rid) =>
-            fetch(`http://localhost:4000/api/recurring_setting/${rid}/tasks`, {
+            fetch(`${VITE_KEY}/api/recurring_setting/${rid}/tasks`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -986,7 +988,7 @@ export default function RecurringShiftSettings({ task }) {
     debugger;
     if (!task?.id) return;
     try {
-      const res = await fetch(`http://localhost:4000/api/recurring/${task.id}`);
+      const res = await fetch(`${VITE_KEY}/api/recurring/${task.id}`);
       const data = await res.json();
 
       // Set recurring settings state if array
@@ -1049,7 +1051,7 @@ export default function RecurringShiftSettings({ task }) {
 
     debugger;
 
-    await fetch(`http://localhost:4000/api/tasks/${task.id}/recurring`, {
+    await fetch(`${VITE_KEY}/api/tasks/${task.id}/recurring`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1084,7 +1086,7 @@ export default function RecurringShiftSettings({ task }) {
         start_time: editTaskData.start_time,
         end_time: editTaskData.end_time
       };
-      const res = await fetch(`http://localhost:4000/api/tasks/${editTaskData.id}`, {
+      const res = await fetch(`${VITE_KEY}/api/tasks/${editTaskData.id}`, {
         method: 'PUT', headers: {'Content-Type':'application/json'},
         body: JSON.stringify(payload)
       });
@@ -1230,7 +1232,7 @@ export default function RecurringShiftSettings({ task }) {
 
                   Promise.all(
                     selectedRecurringIds.map((rid) =>
-                      fetch(`http://localhost:4000/api/recurring_setting/${rid}`, {
+                      fetch(`${VITE_KEY}/api/recurring_setting/${rid}`, {
                         method: "DELETE"
                       })
                     )
