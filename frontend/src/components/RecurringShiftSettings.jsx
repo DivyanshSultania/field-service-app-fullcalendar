@@ -87,9 +87,10 @@ export default function RecurringShiftSettings({ task }) {
   });
   const [selectedClientId, setSelectedClientId] = useState('');
 
-
-
-  
+  // States for 
+  const [timeLengthModalOpen, setTimeLengthModalOpen] = useState(false);
+  const [newStartTime, setNewStartTime] = useState("");
+  const [newEndTime, setNewEndTime] = useState("");
 
   // Mutually exclusive fields
   useEffect(() => {
@@ -980,7 +981,89 @@ export default function RecurringShiftSettings({ task }) {
     );
   }
 
+  // Time Length Modal Update
+  function TimeLengthModal() {
+    if (!timeLengthModalOpen) return null;
+  
+    debugger;
+    return (
+      <Modal
+        open={timeLengthModalOpen}
+        title={"Update Task Time (Time Only)"}
+        onClose={() => setTimeLengthModalOpen(false)}
+      >
+        <div style={{ minWidth: 360, display: "flex", flexDirection: "column", gap: 12 }}>
+          <label>
+            <strong>Start Time</strong>
+            <input
+              type="time"
+              value={newStartTime}
+              onChange={e => setNewStartTime(e.target.value)}
+              style={{ width: "100%" }}
+            />
+          </label>
+  
+          <label>
+            <strong>End Time</strong>
+            <input
+              type="time"
+              value={newEndTime}
+              onChange={e => setNewEndTime(e.target.value)}
+              style={{ width: "100%" }}
+            />
+          </label>
+  
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button className="btn" onClick={() => setTimeLengthModalOpen(false)}>
+              Cancel
+            </button>
+            <button
+              className="btn primary"
+              disabled={!newStartTime || !newEndTime}
+              onClick={handleSaveTimeLengthUpdate}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
+  async function handleSaveTimeLengthUpdate() {
+    try {
+      setLoading(true);
+
+      debugger;
+  
+      await Promise.all(
+        selectedRecurringIds.map(rid =>
+          fetch(`${VITE_KEY}/api/recurring_setting/${rid}/tasks`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              new_start_time: newStartTime,
+              new_end_time: newEndTime
+            })
+          })
+        )
+      );
+  
+      window.showToast?.(
+        "Task time updated successfully"
+      );
+  
+      setTimeLengthModalOpen(false);
+      setSelectedRecurringIds([]);
+      setSelectedPatternAction("");
+      await loadRecurring();
+    } catch (e) {
+      console.error(e);
+      window.showToast?.("Failed to update recurring tasks");
+    } finally {
+      setLoading(false);
+    }
+  }
 
 
   
@@ -1294,6 +1377,10 @@ export default function RecurringShiftSettings({ task }) {
                   openManageStaffModal();
                 } else if (action === 'client') {
                   openClientModal();
+                } else if (action === 'time') {
+                  setNewStartTime(task?.start_time ? dayjs(task.start_time).format('HH:mm') : '');
+                  setNewEndTime(task?.end_time ? dayjs(task.end_time).format('HH:mm') : '');
+                  setTimeLengthModalOpen(true);
                 }
               }}
 
@@ -1310,7 +1397,6 @@ export default function RecurringShiftSettings({ task }) {
               <option value="team_staff">Team Staff</option>
               <option value="individual_staff">Individual Staff</option>
               <option value="client">Client</option>
-              <option value="length">Length</option>
               <option value="time">Time</option>
               <option value="location">Location</option>
             </select>
@@ -1404,6 +1490,7 @@ export default function RecurringShiftSettings({ task }) {
     {TeamSelectionModal()}
     {ManageStaffModal()}
     {LocationSelectionModal()}
+    {TimeLengthModal()}
     <ClientUpdateModal />
     </div>
   );

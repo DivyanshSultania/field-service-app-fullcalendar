@@ -14,10 +14,25 @@ Schedule
 
 Calendar
     1. Details should be reflected while curson is hovering around the scheduled task. The details should include Supervisor ending with bracket(s), cleaners, client name, shift instruction, start time and end time.
+    2. Task border color
+    - [ ] Color coding based on status of shift/job
+    - [ ] Completed - green
+    - [ ] Not Published - cyan
+    - [ ] Published - no border color
+    - [ ] In progress - yellow/orange
+    - [ ] Not Done - red (for past shifts)
+        - [ ] Tasks assigned to Cover should have red 
 
 Tasks
     1. On update of any value, it should reflect the calendar view in realtime. Like time, date and color of supervisor.
-    2. 
+    2.  Cover card color should always be white as background and on sides it should be red
+
+Recurring task
+    1. On create of recurring task, it should also create copy of instructions and assign to created tasks.
+    2. Client update test for recurring
+    
+
+
 
 
 

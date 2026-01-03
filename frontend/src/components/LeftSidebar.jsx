@@ -74,7 +74,15 @@ export default function LeftSidebar({ staff = [], clients = [], teams = [], onNa
         >
           💼 Clients Management
         </div>
-          <div className="menu-item">📅 Schedule</div>
+          <div
+            className={`menu-item ${activeMenu === 'schedule' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveMenu('schedule');
+              onNavigate('schedule');
+            }}
+          >
+            📅 Schedule
+          </div>
         </div>
 
         <div

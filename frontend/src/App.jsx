@@ -4,6 +4,7 @@ import CalendarView from './components/CalendarView';
 import StaffManagement from './components/StaffManagement';
 import TeamManagement from './components/TeamManagement';
 import ClientsManagement from './components/ClientsManagement';
+import Schedule from './pages/Schedule';
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 
@@ -40,10 +41,12 @@ export default function App() {
     switch (view) {
       case 'staff':
         return <StaffManagement />;
-        case 'client':
-          return <ClientsManagement />;
+      case 'client':
+        return <ClientsManagement />;
       case 'team':
         return <TeamManagement />;
+      case 'schedule':
+        return <Schedule />;
       case 'calendar':
       default:
         return <CalendarView filter={filter} />;

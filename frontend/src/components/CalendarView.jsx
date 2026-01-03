@@ -221,6 +221,19 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     }
   }
 
+  // Helper: Determine if a color is "dark"
+  const isDarkColor = (hex) => {
+    if (!hex) return false;
+    const c = hex.replace('#', '');
+    const rgb = parseInt(c, 16);
+    const r = (rgb >> 16) & 255;
+    const g = (rgb >> 8) & 255;
+    const b = rgb & 255;
+    // Perceived luminance
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b);
+    return luminance < 140;
+  };
+
   function updateCalendarView() {
     let filteredTasks = tasks;
 
@@ -236,14 +249,15 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
     const ev = filteredTasks.map(t => {
       const supervisor = staffs.find(s => s.id === t.staff_id);
+      const bgColor = supervisor?.color || '#7c3aed';
       return {
         id: t.id,
         title: t.task_name + (t.staff_name ? '\n' + t.staff_name : ''),
         start: t.start_time,
         end: t.end_time,
-        backgroundColor: supervisor?.color || '#7c3aed',
-        borderColor: supervisor?.color || '#7c3aed',
-        textColor: '#fff',
+        backgroundColor: bgColor,
+        borderColor: bgColor,
+        textColor: isDarkColor(bgColor) ? '#ffffff' : '#111827',
         extendedProps: { ...t }
       };
     });
@@ -1348,6 +1362,9 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                         Publish
                       </label>
                     </div>
+
+
+
                   </div>
                 )}
 
@@ -1981,6 +1998,30 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
           )}
 
           <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:16}}>
+            {currentTask.staff_id !== 'STATIC-COVER-STAFF' && (
+              <button
+                className="btn"
+                style={{ background: '#dc2626', color: '#fff' }}
+                onClick={async () => {
+                  if (!confirm('Cancel this task and assign it to Cover?')) return;
+
+                  try {
+                    await fetch(`${VITE_KEY}/api/tasks/${currentTask.id}/assign-to-cover`, {
+                      method: 'POST'
+                    });
+
+                    showToast('Task cancelled and assigned to Cover', '#16a34a');
+                    setEditModalOpen(false);
+                    refreshCalendar();
+                  } catch (e) {
+                    console.error(e);
+                    showToast('Failed to cancel task');
+                  }
+                }}
+              >
+                Cancel Task
+              </button>
+            )}
             <button className="btn" onClick={closeEditTaskModal}>Close</button>
             <button className="btn primary" onClick={handleSaveShiftModal}>Save</button>
 

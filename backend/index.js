@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS staff (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Ensure static Cover staff exists
+INSERT INTO staff (id, name, role)
+SELECT 'STATIC-COVER-STAFF', 'Cover', 'system'
+WHERE NOT EXISTS (
+  SELECT 1 FROM staff WHERE name = 'Cover'
+);
+
 CREATE TABLE IF NOT EXISTS teams (
   id TEXT PRIMARY KEY,
   name TEXT,
@@ -416,9 +423,21 @@ app.put('/api/staff/:id', async (req, res) => {
 
 app.delete('/api/staff/:id', async (req, res) => {
   try {
-    await runSql('DELETE FROM staff WHERE id=?', [req.params.id]);
+    const staffId = req.params.id;
+
+    // Prevent deletion of static Cover staff
+    const staff = await getSql('SELECT id, name FROM staff WHERE id=?', [staffId]);
+    if (staff && staff.name === 'Cover') {
+      return res.status(400).json({
+        error: 'Cover staff is system-defined and cannot be deleted'
+      });
+    }
+
+    await runSql('DELETE FROM staff WHERE id=?', [staffId]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 /* -----------------------------
@@ -754,11 +773,63 @@ app.put('/api/tasks/:id', async (req, res) => {
   }
 });
 
+
 app.delete('/api/tasks/:id', async (req, res) => {
   try {
     await runSql('DELETE FROM task_team_members WHERE task_id=?', [req.params.id]);
     await runSql('DELETE FROM tasks WHERE id=?', [req.params.id]);
     res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * Assign task to static Cover staff instead of deleting
+ */
+app.post('/api/tasks/:id/assign-to-cover', async (req, res) => {
+  try {
+    const taskId = req.params.id;
+
+    // Ensure Cover staff exists
+    const coverStaff = await getSql(
+      "SELECT id FROM staff WHERE id = 'STATIC-COVER-STAFF' OR name = 'Cover'"
+    );
+
+    if (!coverStaff) {
+      return res.status(500).json({
+        error: 'Cover staff not found'
+      });
+    }
+
+    // Update task assignment to Cover
+    await runSql(
+      `UPDATE tasks
+       SET staff_id = ?, team_id = NULL, assignment_type = 'staff'
+       WHERE id = ?`,
+      [coverStaff.id, taskId]
+    );
+
+    // Remove any team members linked to the task
+    await runSql(
+      'DELETE FROM task_team_members WHERE task_id = ?',
+      [taskId]
+    );
+
+    // const updatedTask = await getSql(
+    //   'SELECT * FROM tasks WHERE id = ?',
+    //   [taskId]
+    // );
+
+    // if (!updatedTask) {
+    //   return res.status(404).json({ error: 'Task not found' });
+    // }
+
+    res.json({
+      ok: true,
+      message: 'Task assigned to Cover staff',
+      // task: updatedTask
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -985,15 +1056,48 @@ app.put('/api/recurring_setting/:id/tasks', async (req, res) => {
       }
 
       if (new_start_time && new_end_time) {
-        await runSql(
-          'UPDATE tasks SET start_time=?, end_time=? WHERE id=?',
-          [new_start_time, new_end_time, taskId]
+        // Fetch existing task times (date + time)
+        const existingTask = await getSql(
+          'SELECT start_time, end_time FROM tasks WHERE id=?',
+          [taskId]
         );
+
+        if (existingTask?.start_time && existingTask?.end_time) {
+          const startDate = dayjs(existingTask.start_time);
+          const endDate = dayjs(existingTask.end_time);
+
+          const [startHour, startMinute] = new_start_time.split(':').map(Number);
+          const [endHour, endMinute] = new_end_time.split(':').map(Number);
+
+          const updatedStart = startDate
+            .hour(startHour)
+            .minute(startMinute)
+            .second(0)
+            .toISOString();
+
+          const updatedEnd = endDate
+            .hour(endHour)
+            .minute(endMinute)
+            .second(0)
+            .toISOString();
+
+          await runSql(
+            'UPDATE tasks SET start_time=?, end_time=? WHERE id=?',
+            [updatedStart, updatedEnd, taskId]
+          );
+        }
       }
 
       // [PATCH] Update task_length in recurring_task_settings if new_start_time & new_end_time are provided
       if (new_start_time && new_end_time) {
-        const lengthMinutes = dayjs(new_end_time).diff(dayjs(new_start_time), "minute");
+        const [sh, sm] = new_start_time.split(':').map(Number);
+        const [eh, em] = new_end_time.split(':').map(Number);
+
+        const lengthMinutes = dayjs()
+          .hour(eh)
+          .minute(em)
+          .diff(dayjs().hour(sh).minute(sm), 'minute');
+
         await runSql(
           'UPDATE recurring_task_settings SET task_length=? WHERE id=?',
           [String(lengthMinutes), recId]
@@ -1130,7 +1234,8 @@ app.post("/api/tasks/:id/recurring", async (req, res) => {
     let end = closeDate ? dayjs(closeDate) : null;
 
     if (!end) {
-      const calculatedEndDate = start.day(selectedDays[selectedDays.length - 1]).add((occurrences || 1), 'week');
+      // const calculatedEndDate = start.day(selectedDays[selectedDays.length - 1]).add((occurrences || 1) * (frequency || 1), 'week');
+      const calculatedEndDate = start.add((occurrences || 1) * (frequency || 1), 'week');
       end = calculatedEndDate.clone();
     }
 
@@ -1258,7 +1363,8 @@ app.post("/api/tasks/:id/recurring", async (req, res) => {
       console.log('start: ', start);
       console.log('end: ', end);
       console.log('frequency: ', frequency);
-
+      console.log('results: ', results);
+      console.log('anyRecurringCreated: ', anyRecurringCreated);
 
 
       if (anyRecurringCreated) {
@@ -1349,6 +1455,56 @@ app.delete('/api/task_comments/:id', async (req, res) => {
     await runSql('DELETE FROM task_comments WHERE id=?', [req.params.id]);
     res.json({ ok: true });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* -----------------------------
+   📋 Tasks Schedule
+----------------------------- */
+app.get('/api/taskschedule', async (req, res) => {
+  try {
+
+    console.log('req query', req.query);
+    const { from, to, staffId, clientId } = req.query;
+
+    let where = [];
+    let params = [];
+
+    if (from) {
+      where.push('date(start_time) >= date(?)');
+      params.push(from);
+    }
+    if (to) {
+      where.push('date(start_time) <= date(?)');
+      params.push(to);
+    }
+    if (staffId) {
+      where.push('tasks.staff_id = ?');
+      params.push(staffId);
+    }
+    if (clientId) {
+      where.push('tasks.client_id = ?');
+      params.push(clientId);
+    }
+
+    const sql = `
+      SELECT
+        tasks.*,
+        staff.name AS staff_name,
+        clients.client_name AS client_name
+      FROM tasks
+      LEFT JOIN staff ON staff.id = tasks.staff_id
+      LEFT JOIN clients ON clients.id = tasks.client_id
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY start_time ASC
+    `;
+
+    const rows = await allSql(sql, params);
+    res.json(rows);
+  } catch (e) {
+
+    console.error('Task scehdule error', e);
     res.status(500).json({ error: e.message });
   }
 });
