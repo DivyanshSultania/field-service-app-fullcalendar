@@ -250,13 +250,45 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     const ev = filteredTasks.map(t => {
       const supervisor = staffs.find(s => s.id === t.staff_id);
       const bgColor = supervisor?.color || '#7c3aed';
+
+      // Determine border color based on task status
+      let borderColor = 'transparent';
+      const now = dayjs();
+
+      if (t.started_at && t.stopped_at) {
+        // Completed
+        borderColor = '#16a34a'; // green
+      } else if (dayjs(t.end_time).isBefore(now)) {
+        // Past but not done
+        borderColor = '#dc2626'; // red
+      } else if (t.publish) {
+        // Published
+        borderColor = '#06b6d4'; // cyan
+      }  else if (!t.publish) {
+        // Not Published
+        borderColor = '#FFFF00'; // yellow
+      } else if (t.started_at && !t.stopped_at) {
+        // In progress
+        borderColor = '#f59e0b'; // amber/orange
+      }
+
+      // Tasks assigned to cover should always be red
+      if (t.assignment_type === 'cover') {
+        borderColor = '#dc2626';
+      }
+
       return {
         id: t.id,
         title: t.task_name + (t.staff_name ? '\n' + t.staff_name : ''),
         start: t.start_time,
         end: t.end_time,
         backgroundColor: bgColor,
-        borderColor: bgColor,
+        borderColor: borderColor,
+        borderWidth: borderColor === 'transparent' ? 0 : 4,
+        boxShadow:
+          borderColor === 'transparent'
+            ? 'none'
+            : `1px 1px 1px 10px ${borderColor}`,
         textColor: isDarkColor(bgColor) ? '#ffffff' : '#111827',
         extendedProps: { ...t }
       };
