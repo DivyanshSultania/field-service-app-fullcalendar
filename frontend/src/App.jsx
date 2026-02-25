@@ -19,21 +19,41 @@ function AuthenticatedApp({ user, onLogout }) {
   
     const token = localStorage.getItem("token");
   
-    const authFetch = function (url) {
-        debugger;
-        return fetch(url, {
+    // const authFetch = function (url) {
+    //     debugger;
+    //     return fetch(url, {
+    //       headers: {
+    //         Authorization: `Bearer ${token}`
+    //       }
+    //     }).then(r => {
+    //         debugger;
+    //       if (r.status === 401) {
+    //         localStorage.clear();
+    //         window.location.reload();
+    //       }
+    //       return r.json();
+    //     });
+    // }
+
+    const authFetch = async (url, options = {}) => {
+        const token = localStorage.getItem("token");
+      
+        const res = await fetch(url, {
+          ...options,
           headers: {
-            Authorization: `Bearer ${token}`
+            ...options.headers,
+            Authorization: `Bearer ${token}`,
           }
-        }).then(r => {
-            debugger;
-          if (r.status === 401) {
-            localStorage.clear();
-            window.location.reload();
-          }
-          return r.json();
         });
-    }
+      
+        if (res.status === 401) {
+          localStorage.clear();
+          window.location.reload();
+          throw new Error("Unauthorized");
+        }
+      
+        return res.json();
+      };
   
     useEffect(() => {
       authFetch(`${VITE_KEY}/api/staff`).then(setStaff).catch(()=>{});
