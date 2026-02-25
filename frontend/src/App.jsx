@@ -19,18 +19,21 @@ function AuthenticatedApp({ user, onLogout }) {
   
     const token = localStorage.getItem("token");
   
-    const authFetch = (url) =>
-      fetch(url, {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      }).then(r => {
-        if (r.status === 401) {
-          localStorage.clear();
-          window.location.reload();
-        }
-        return r.json();
-      });
+    const authFetch = function (url) {
+        debugger;
+        return fetch(url, {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        }).then(r => {
+            debugger;
+          if (r.status === 401) {
+            localStorage.clear();
+            window.location.reload();
+          }
+          return r.json();
+        });
+    }
   
     useEffect(() => {
       authFetch(`${VITE_KEY}/api/staff`).then(setStaff).catch(()=>{});
