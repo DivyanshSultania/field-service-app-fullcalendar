@@ -5,79 +5,95 @@ import StaffManagement from './components/StaffManagement';
 import TeamManagement from './components/TeamManagement';
 import ClientsManagement from './components/ClientsManagement';
 import Schedule from './pages/Schedule';
+import Login from './pages/Login';
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 
-export default function App() {
-  const [staff, setStaff] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [teams, setTeams] = useState([]);
-  const [clients, setClients] = useState([]);
-  const [filter, setFilter] = useState({ type: 'staff', ids: [] });
-  const [view, setView] = useState('calendar'); // Default view is 'calendar'
-
-  useEffect(() => {
-    fetch(`${VITE_KEY}/api/staff`).then(r=>r.json()).then(setStaff).catch(()=>{});
-    fetch(`${VITE_KEY}/api/tasks`).then(r=>r.json()).then(setTasks).catch(()=>{});
-    fetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams).catch(() => {});
-    fetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
-  }, []);
+function AuthenticatedApp({ user, onLogout }) {
+    const [staff, setStaff] = useState([]);
+    const [tasks, setTasks] = useState([]);
+    const [teams, setTeams] = useState([]);
+    const [clients, setClients] = useState([]);
+    const [filter, setFilter] = useState({ type: 'staff', ids: [] });
+    const [view, setView] = useState('calendar');
   
-  // function renderView() {
-  //   switch (view) {
-  //     case 'staff':
-  //       return <StaffView />;
-  //     case 'client':
-  //       return <ClientView />;
-  //     case 'team':
-  //       return <TeamView />;
-  //     case 'calendar':
-  //     default:
-  //       return <CalendarView tasks={tasks} />;
-  //   }
-  // }
-
-  function renderView() {
-    switch (view) {
-      case 'staff':
-        return <StaffManagement />;
-      case 'client':
-        return <ClientsManagement />;
-      case 'team':
-        return <TeamManagement />;
-      case 'schedule':
-        return <Schedule />;
-      case 'calendar':
-      default:
-        return <CalendarView filter={filter} />;
+    const token = localStorage.getItem("token");
+  
+    const authFetch = (url) =>
+      fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }).then(r => {
+        if (r.status === 401) {
+          localStorage.clear();
+          window.location.reload();
+        }
+        return r.json();
+      });
+  
+    useEffect(() => {
+      authFetch(`${VITE_KEY}/api/staff`).then(setStaff).catch(()=>{});
+      authFetch(`${VITE_KEY}/api/tasks`).then(setTasks).catch(()=>{});
+      authFetch(`${VITE_KEY}/api/teams`).then(setTeams).catch(()=>{});
+      authFetch(`${VITE_KEY}/api/clients`).then(setClients).catch(()=>{});
+    }, []);
+  
+    function renderView() {
+      switch (view) {
+        case 'staff':
+          return <StaffManagement />;
+        case 'client':
+          return <ClientsManagement />;
+        case 'team':
+          return <TeamManagement />;
+        case 'schedule':
+          return <Schedule />;
+        default:
+          return <CalendarView filter={filter} />;
+      }
     }
+  
+    return (
+      <div className="app">
+        <LeftSidebar
+          staff={staff}
+          clients={clients}
+          teams={teams}
+          onFilterChange={(type, ids) => setFilter({ type, ids })}
+          onNavigate={setView}
+        />
+  
+        <main className="main">
+          <div style={{ textAlign: 'right', padding: '10px' }}>
+            Welcome {user.name}
+            <button onClick={onLogout} style={{ marginLeft: '10px' }}>
+              Logout
+            </button>
+          </div>
+  
+          {renderView()}
+        </main>
+      </div>
+    );
   }
 
-  return (
-    <div className="app">
-      <LeftSidebar
-        staff={staff}
-        clients={clients}
-        teams={teams}
-        onFilterChange={(type, ids) => setFilter({ type, ids })}
-        onNavigate={setView} 
-      />
-      <main className="main">
-      {renderView()}
-        {/* <CalendarView tasks={tasks} /> */}
-      </main>
-    </div>
-  );
-}
+export default function App() {
+  const [user, setUser] = useState(null);
 
-function StaffView() {
-  return <div>Staff Table View</div>;
-}
+  useEffect(() => {
+    const savedUser = localStorage.getItem("user");
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+    }
+  }, []);
 
-function ClientView() {
-  return <div>Client Table View</div>;
-}
+  if (!user) {
+    return <Login onLogin={setUser} />;
+  }
 
-function TeamView() {
-  return <div>Team Table View</div>;
+  return <AuthenticatedApp user={user} onLogout={() => {
+    localStorage.clear();
+    setUser(null);
+  }} />;
 }

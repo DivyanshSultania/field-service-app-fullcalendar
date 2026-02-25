@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
+import {authFetch} from './../pages/utils';
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 
@@ -22,7 +23,7 @@ export default function ClientsManagement() {
 
   // Fetch all clients
   useEffect(() => {
-    fetch(`${VITE_KEY}/api/clients`)
+    authFetch(`${VITE_KEY}/api/clients`)
       .then(r => r.json())
       .then(setClients)
       .catch(err => console.error('Error loading clients', err));
@@ -73,7 +74,7 @@ export default function ClientsManagement() {
       : `${VITE_KEY}/api/clients`;
     const method = editMode ? 'PUT' : 'POST';
 
-    fetch(url, {
+    authFetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(form),
@@ -92,7 +93,7 @@ export default function ClientsManagement() {
 
   const handleDelete = (id) => {
     if (!window.confirm('Delete this client?')) return;
-    fetch(`${VITE_KEY}/api/clients/${id}`, { method: 'DELETE' })
+    authFetch(`${VITE_KEY}/api/clients/${id}`, { method: 'DELETE' })
       .then(() => setClients(prev => prev.filter(c => c.id !== id)))
       .catch(err => console.error('Delete failed', err));
   };

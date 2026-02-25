@@ -7,6 +7,7 @@ import dayjs from 'dayjs';
 import Modal from './Modal';
 import RecurringShiftSettings from './RecurringShiftSettings'
 import { GOOGLE_MAPS_API_KEY, loadGoogleMapsApi } from '../utils/googleMaps';
+import {authFetch} from './../pages/utils';
 
 // TODO: refresh on repeat create
 // TODO: check why monday is selected, and it should apply from current week
@@ -130,16 +131,16 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
   // Fetch teams, staff, clients, locations
   useEffect(() => {
-    fetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams).catch(() => {});
-    fetch(`${VITE_KEY}/api/staff`).then(r => r.json()).then(setStaffs).catch(() => {});
-    fetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
-    fetch(`${VITE_KEY}/api/locations`).then(r => r.json()).then(setLocations).catch(() => {});
-    fetch(`${VITE_KEY}/api/team_members`).then(r => r.json()).then(setTeamMembers).catch(() => {});
-    fetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
+    authFetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams).catch(() => {});
+    authFetch(`${VITE_KEY}/api/staff`).then(r => r.json()).then(setStaffs).catch(() => {});
+    authFetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
+    authFetch(`${VITE_KEY}/api/locations`).then(r => r.json()).then(setLocations).catch(() => {});
+    authFetch(`${VITE_KEY}/api/team_members`).then(r => r.json()).then(setTeamMembers).catch(() => {});
+    authFetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
 
     const listener = () => {
       // Reload tasks using your existing function
-      fetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
+      authFetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
     };
   
     window.addEventListener("refreshCalendar", listener);
@@ -210,7 +211,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
   
       setTravelInfo({ distance_km: distKm, duration_min: durMin, from_location: prev.location_id });
 
-      await fetch(`${VITE_KEY}/api/tasks/${task.id}`, {
+      await authFetch(`${VITE_KEY}/api/tasks/${task.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...task, travel_from: prev.location_id, travel_dist: distKm, travel_duration: durMin })
@@ -390,7 +391,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     };
   
     try {
-      const res = await fetch(`${VITE_KEY}/api/tasks`, {
+      const res = await authFetch(`${VITE_KEY}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -398,7 +399,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
       const created = await res.json();
   
       // Fetch enriched task (joins staff, client, location, team)
-      const fullRes = await fetch(`${VITE_KEY}/api/tasks/${created.id}`);
+      const fullRes = await authFetch(`${VITE_KEY}/api/tasks/${created.id}`);
       const fullTask = await fullRes.json();
   
       // Add to FullCalendar
@@ -781,7 +782,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
         comment: locationComment,
       };
     
-      fetch(`${VITE_KEY}/api/locations`, {
+      authFetch(`${VITE_KEY}/api/locations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(loc),
@@ -789,7 +790,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
         .then(r => r.json())
         .then(newLoc => {
           handleLocationModalAdd(newLoc);
-          return fetch(`${VITE_KEY}/api/locations`);
+          return authFetch(`${VITE_KEY}/api/locations`);
         })
         .then(r => r.json())
         .then(setLocations)
@@ -810,9 +811,9 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     async function handleDeleteLocation(locId) {
       setLocationLoadingDelete(ld => ({...ld, [locId]: true}));
       try {
-        await fetch(`${VITE_KEY}/api/locations/${locId}`, { method: 'DELETE' });
+        await authFetch(`${VITE_KEY}/api/locations/${locId}`, { method: 'DELETE' });
         // Refresh locations list
-        fetch(`${VITE_KEY}/api/locations`)
+        authFetch(`${VITE_KEY}/api/locations`)
           .then(r => r.json())
           .then(setLocations)
           .catch(()=>{});
@@ -824,7 +825,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
     useEffect(() => {
       if (locationModalOpen) {
-        fetch(`${VITE_KEY}/api/locations`)
+        authFetch(`${VITE_KEY}/api/locations`)
           .then(r => r.json())
           .then(setLocations)
           .catch(e => console.error('Fetch locations error', e));
@@ -969,7 +970,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     debugger;
     // if (currentTask && currentTask.id) {
     if (taskObj && taskObj.id) {
-      fetch(`${VITE_KEY}/api/task_instructions/${taskObj.id}`)
+      authFetch(`${VITE_KEY}/api/task_instructions/${taskObj.id}`)
         .then(r => r.json())
         .then(list => {
           if (Array.isArray(list)) {
@@ -980,7 +981,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
         })
         .catch(() => setEditInstructions([]));
 
-        fetch(`${VITE_KEY}/api/task_comments/${taskObj.id}`)
+        authFetch(`${VITE_KEY}/api/task_comments/${taskObj.id}`)
         .then(r => r.json())
         .then(list => {
           if (Array.isArray(list)) {
@@ -1013,7 +1014,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
   function closeEditTaskModal() {
     setEditModalOpen(false);
-    fetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(taskResp => {
+    authFetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(taskResp => {
       setTasks(taskResp);
 
       updateCalendarView();
@@ -1039,7 +1040,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     function handleSaveShiftModal() {
       // debugger;
       setManageLoading(true);
-      fetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
+      authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(currentTask),
@@ -1049,7 +1050,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
         computeAndSaveTravelDistance(currentTask);
         setEditModalOpen(false);
 
-        fetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(taskResp => {
+        authFetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(taskResp => {
           setTasks(taskResp);
     
           updateCalendarView();
@@ -1099,7 +1100,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
       if (!currentTask || !currentTask.id) return;
       const payload = { task_id: currentTask.id, ques: editInstructionInput, resp_type: editInstructionInputRespType };
       try {
-        const res = await fetch(`${VITE_KEY}/api/task_instructions`, {
+        const res = await authFetch(`${VITE_KEY}/api/task_instructions`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
         });
         const newInst = await res.json();
@@ -1121,7 +1122,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
       // reload from server to reset any temporary edits
       if (currentTask && currentTask.id) {
         debugger;
-        fetch(`${VITE_KEY}/api/task_instructions/${currentTask.id}`)
+        authFetch(`${VITE_KEY}/api/task_instructions/${currentTask.id}`)
           .then(r => r.json())
           .then(list => setEditInstructions(list || []))
           .catch(() => {});
@@ -1136,7 +1137,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
       const inst = editInstructions.find(i => i.id === id);
       if (!inst) return;
       try {
-        const res = await fetch(`${VITE_KEY}/api/task_instructions/${id}`, {
+        const res = await authFetch(`${VITE_KEY}/api/task_instructions/${id}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(inst)
         });
         const updated = await res.json();
@@ -1151,7 +1152,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     async function handleDeleteInstruction(id) {
       if (!confirm('Delete instruction?')) return;
       try {
-        await fetch(`${VITE_KEY}/api/task_instructions/${id}`, { method: 'DELETE' });
+        await authFetch(`${VITE_KEY}/api/task_instructions/${id}`, { method: 'DELETE' });
         setEditInstructions(arr => arr.filter(i => i.id !== id));
       } catch (err) {
         console.error('Delete instruction error', err);
@@ -1170,7 +1171,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
     // Load recurring children for roster tab
     async function loadRecurringChildren(taskId) {
-      const res = await fetch(`${VITE_KEY}/api/recurring/${taskId}`);
+      const res = await authFetch(`${VITE_KEY}/api/recurring/${taskId}`);
       const data = await res.json();
       setRecurringSettings(data.row || []);
       setChildTasks(data.children || []);
@@ -1748,7 +1749,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                             const started = new Date().toISOString();
                             handleShiftUpdate({ started_at: started });
                             try {
-                              await fetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, started_at: started}) });
+                              await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, started_at: started}) });
                             } catch(e){ console.error('start shift save error', e); }
 
                             // start timer UI
@@ -1773,7 +1774,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                               const stopped = new Date().toISOString();
                               handleShiftUpdate({ stopped_at: stopped });
                               try {
-                                await fetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, stopped_at: stopped}) });
+                                await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, stopped_at: stopped}) });
                               } catch(e){ console.error('end shift save error', e); }
                               if (shiftTimerRef.current) { clearInterval(shiftTimerRef.current); shiftTimerRef.current = null; }
                             }}>End Shift</button>
@@ -1855,7 +1856,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                           //     setTravelInfo({ distance_km: distKm, duration_min: durMin, from_location: prev.location_id });
 
                           //     // persist to backend
-                          //     await fetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
+                          //     await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
                           //       method:'PUT', headers:{'Content-Type':'application/json'},
                           //       body: JSON.stringify({ ...currentTask, travel_from: prev.location_id, travel_dist: Number(distKm), travel_duration: Number(durMin) })
                           //     });
@@ -1889,7 +1890,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                           <button className="btn" onClick={async ()=>{
                             // fetch all comments and filter
                             try {
-                              const res = await fetch(`${VITE_KEY}/api/task_comments/${currentTask.id}`);
+                              const res = await authFetch(`${VITE_KEY}/api/task_comments/${currentTask.id}`);
                               const all = await res.json();
                               setTaskMessages(all);
                             } catch(e){ console.error('fetch comments', e); }
@@ -1940,7 +1941,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                             const selectEl = document.getElementById('newMessageStaffSelect');
                             const selectedStaffId = selectEl ? selectEl.value : currentTask.staff_id;
                             const payload = { task_id: currentTask.id, comment: newMessageText.trim(), is_read: 0, staff_id: selectedStaffId || currentTask.staff_id };
-                            const res = await fetch(`${VITE_KEY}/api/task_comments`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+                            const res = await authFetch(`${VITE_KEY}/api/task_comments`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                             const created = await res.json();
                             setTaskMessages(arr => [...arr, created]);
                             setNewMessageText('');
@@ -2038,7 +2039,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                   if (!confirm('Cancel this task and assign it to Cover?')) return;
 
                   try {
-                    await fetch(`${VITE_KEY}/api/tasks/${currentTask.id}/assign-to-cover`, {
+                    await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}/assign-to-cover`, {
                       method: 'POST'
                     });
 

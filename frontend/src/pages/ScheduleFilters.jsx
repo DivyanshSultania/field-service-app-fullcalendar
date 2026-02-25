@@ -1,5 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
+import { authFetch } from './utils';
+
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 
@@ -8,13 +10,15 @@ export default function ScheduleFilters({ filters, setFilters, onSearch }) {
   const [staffs, setStaffs] = useState([]);
   const [clients, setClients] = useState([]);
 
+  
+
   useEffect(() => {
-    fetch(`${VITE_KEY}/api/staff`)
+    authFetch(`${VITE_KEY}/api/staff`)
       .then(r => r.json())
       .then(setStaffs)
       .catch(() => {});
 
-    fetch(`${VITE_KEY}/api/clients`)
+    authFetch(`${VITE_KEY}/api/clients`)
       .then(r => r.json())
       .then(setClients)
       .catch(() => {});

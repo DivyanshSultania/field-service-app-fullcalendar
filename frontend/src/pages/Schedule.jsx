@@ -3,6 +3,7 @@ import ScheduleFilters from './ScheduleFilters';
 import IndividualView from './IndividualView';
 import GroupByStaff from './GroupByStaff';
 import GroupByClient from './GroupByClient';
+import { authFetch } from './utils';
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 
@@ -20,7 +21,7 @@ export default function Schedule() {
 
   const fetchSchedule = async () => {
     const params = new URLSearchParams(filters).toString();
-    const res = await fetch(`${VITE_KEY}/api/taskschedule?${params}`);
+    const res = await authFetch(`${VITE_KEY}/api/taskschedule?${params}`);
     const data = await res.json();
     setTasks(data);
   };
