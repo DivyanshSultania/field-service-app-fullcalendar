@@ -8,11 +8,13 @@
     "seed": "node seed.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "sqlite3": "^5.1.6",
-    "cors": "^2.8.5",
     "body-parser": "^1.20.2",
-    "uuid": "^9.0.0",
-    "dayjs": "^1.11.9"
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.9",
+    "express": "^4.18.2",
+    "googleapis": "^169.0.0",
+    "multer": "^2.0.2",
+    "sqlite3": "^5.1.6",
+    "uuid": "^9.0.0"
   }
 }

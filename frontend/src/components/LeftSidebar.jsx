@@ -60,6 +60,15 @@ export default function LeftSidebar({ staff = [], clients = [], teams = [], onNa
           >
             👥 Staff Management
           </div>
+          <div
+            className={`menu-item ${activeMenu === 'admin' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveMenu('admin');
+              onNavigate('admin');
+            }}
+          >
+            🔐 Admin Management
+          </div>
           <div  className={`menu-item ${activeMenu === 'team' ? 'active' : ''}`}
             onClick={() => {
               setActiveMenu('team');

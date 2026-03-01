@@ -141,6 +141,8 @@ CREATE TABLE IF NOT EXISTS images (
   id TEXT PRIMARY KEY,
   task_id TEXT,
   staff_id TEXT,
+  comment VARCHAR(2000),
+  staff_name TEXT,
   images TEXT, -- It will hold image link
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
