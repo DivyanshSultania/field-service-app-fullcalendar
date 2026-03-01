@@ -68,6 +68,8 @@ export default function CalendarView({
   const calendarRef = useRef(null);
   const [manageLoading, setManageLoading] = useState(false);
   const [currentView, setCurrentView] = useState('timeGridWeek');
+  const [dayDropdownOpen, setDayDropdownOpen] = useState(false);
+  const dayDropdownRef = useRef(null);
 
 
   // DB Fetched Values
@@ -160,14 +162,35 @@ export default function CalendarView({
     window.addEventListener("refreshCalendar", listener);
     return () => window.removeEventListener("refreshCalendar", listener);
   }, []);
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (dayDropdownRef.current && !dayDropdownRef.current.contains(e.target)) {
+        setDayDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
-  const handleHiddenDaysChange = (e) => {
-    const selected = Array.from(e.target.selectedOptions || []).map(opt =>
-      Number(opt.value)
-    );
+  const handleToggleHiddenDay = (dayValue) => {
+    const current = filter.hiddenDays || [];
+    const exists = current.includes(dayValue);
+    const next = exists
+      ? current.filter(d => d !== dayValue)
+      : [...current, dayValue];
     if (onHiddenDaysChange) {
-      onHiddenDaysChange(selected);
+      onHiddenDaysChange(next);
     }
+  };
+
+  const hiddenDaysLabel = () => {
+    const current = filter.hiddenDays || [];
+    if (!current.length) return 'No days hidden';
+    if (current.length === 7) return 'All days hidden';
+    const labels = dayOptions
+      .filter(d => current.includes(d.value))
+      .map(d => d.label);
+    return labels.join(', ');
   };
 
   async function computeAndSaveTravelDistance(task, isBtnClick) {
@@ -2267,29 +2290,83 @@ export default function CalendarView({
           Loading...
         </div>
       )}
-      <div style={{ padding: '8px 16px' }}>
-        <label style={{ fontSize: 13, marginRight: 8 }}>
+      <div style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 13 }}>
           Hide days (week view only):
-        </label>
-        <select
-          multiple
-          value={filter.hiddenDays || []}
-          onChange={handleHiddenDaysChange}
-          disabled={currentView !== 'timeGridWeek'}
-          style={{
-            minWidth: 220,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid #d1d5db',
-            background: '#fff'
-          }}
+        </span>
+        <div
+          ref={dayDropdownRef}
+          style={{ position: 'relative', minWidth: 240 }}
         >
-          {dayOptions.map(d => (
-            <option key={d.value} value={d.value}>
-              {d.label}
-            </option>
-          ))}
-        </select>
+          <button
+            type="button"
+            disabled={currentView !== 'timeGridWeek'}
+            onClick={() => {
+              if (currentView === 'timeGridWeek') {
+                setDayDropdownOpen(open => !open);
+              }
+            }}
+            style={{
+              width: '100%',
+              padding: '6px 10px',
+              borderRadius: 6,
+              border: '1px solid #d1d5db',
+              background: currentView === 'timeGridWeek' ? '#ffffff' : '#f3f4f6',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: 13,
+              cursor: currentView === 'timeGridWeek' ? 'pointer' : 'not-allowed'
+            }}
+          >
+            <span style={{ color: '#111827' }}>{hiddenDaysLabel()}</span>
+            <span style={{ marginLeft: 8, fontSize: 10, color: '#6b7280' }}>▼</span>
+          </button>
+          {dayDropdownOpen && currentView === 'timeGridWeek' && (
+            <div
+              style={{
+                position: 'absolute',
+                top: '110%',
+                left: 0,
+                right: 0,
+                maxHeight: 220,
+                background: '#ffffff',
+                borderRadius: 6,
+                border: '1px solid #e5e7eb',
+                boxShadow: '0 8px 20px rgba(15,23,42,0.12)',
+                padding: '8px 0',
+                zIndex: 1000,
+                overflowY: 'auto'
+              }}
+            >
+              {dayOptions.map(d => {
+                const checked = (filter.hiddenDays || []).includes(d.value);
+                return (
+                  <label
+                    key={d.value}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '6px 12px',
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      background: checked ? '#eef2ff' : 'transparent'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => handleToggleHiddenDay(d.value)}
+                      style={{ margin: 0 }}
+                    />
+                    <span>{d.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
       <div style={{ display: 'flex', flex: 1 }}>
         <div style={{ flex: 1 }}>
