@@ -2,3 +2,5 @@
 *.sqlite
 data.sqlite
 backend/data.sqlite
+cleaners-roaster-c166c2849ea3.json
+.env
