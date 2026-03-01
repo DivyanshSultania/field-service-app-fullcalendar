@@ -29,3 +29,34 @@ Frontend will run on VITE_API_URL=http://localhost:4000
 ## Notes
 - The frontend fetches /api/staff and /api/tasks from http://localhost:4000. Make sure backend is running.
 - This is a starter scaffold. You can extend the API and UI (modals, Google Places integration, TUI Calendar) as needed.
+
+
+## Old
+- Frontend - https://vercel.com/divyanshs-projects-6f267141/field-service-app-fullcalendar/deployments?environment=production
+- Backend - https://dashboard.render.com/web/srv-d5adq0qli9vc73b4ht4g
+
+## New
+- Banckend - https://backend-worker.sultania-divyansh.workers.dev/
+- Frontend - https://field-service-app-fullcalendar-qurer8155.vercel.app/
+
+
+## Front End Integration
+```js
+const res = await fetch('/api/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ email, password })
+})
+
+const data = await res.json()
+
+localStorage.setItem('token', data.token)
+
+
+// Every API call
+
+// headers: {
+//   Authorization: `Bearer ${localStorage.getItem('token')}`
+// }
+
+```

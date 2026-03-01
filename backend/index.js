@@ -6,6 +6,10 @@ import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import dayjs from "dayjs";
 
+import multer from 'multer';
+import { google } from 'googleapis';
+import fs from 'fs';
+
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -174,9 +178,10 @@ CREATE TABLE IF NOT EXISTS task_comments (
 CREATE TABLE IF NOT EXISTS images (
   id TEXT PRIMARY KEY,
   task_id TEXT,
-  -- comment VARCHAR(65000),
+  comment VARCHAR(2000),
   -- is_read BOOLEAN,
   staff_id TEXT,
+  staff_name TEXT,
   images TEXT, -- It will hold image link
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
@@ -200,6 +205,121 @@ CREATE TABLE IF NOT EXISTS task_instructions (
 db.exec(initSql, (err) => {
   if (err) console.error('DB init error', err);
 });
+
+// Google Drive File Upload Init Starts
+const upload = multer({ dest: 'tmp/' });
+
+const auth = new google.auth.GoogleAuth({
+  keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
+  scopes: ['https://www.googleapis.com/auth/drive'],
+});
+
+const drive = google.drive({ version: 'v3', auth });
+// Google Drive File Upload Init Ends
+
+
+/* -----------------------------
+  🖼️ Images
+----------------------------- */
+app.post('/api/imageupload/:task_id/:staff_id/:staff_name', upload.single('image'), async (req, res) => {
+  try {
+    console.log('req.headers', req.headers);
+    console.log('req.body', req.body);
+    console.log('req.file', req.file);
+
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image uploaded' });
+    }
+
+    let taskId = req.params.task_id;
+    let staffId = req.params.staff_id;
+    let staffName = req.params.staff_name;
+
+    let createdAt = new Date().toISOString();
+
+    if (!taskId) {
+      return res.status(400).json({ error: 'Task Id is required' });
+    }
+
+    const fileMetadata = {
+      name: req.file.originalname,
+      // parents: process.env.GOOGLE_DRIVE_FOLDER_ID
+      //   ? [process.env.GOOGLE_DRIVE_FOLDER_ID]
+      //   : undefined,
+    };
+
+    const media = {
+      mimeType: req.file.mimetype,
+      body: fs.createReadStream(req.file.path),
+    };
+
+    const response = await drive.files.create({
+      requestBody: fileMetadata,
+      media,
+      fields: 'id',
+    });
+
+    const fileId = response.data.id;
+
+    // Make image public
+    await drive.permissions.create({
+      fileId,
+      requestBody: {
+        role: 'reader',
+        type: 'anyone',
+      },
+    });
+
+    // Direct renderable image URL
+    const publicUrl = `https://drive.google.com/uc?id=${fileId}`;
+
+    // Cleanup temp file
+    fs.unlinkSync(req.file.path);
+
+    const id = uuidv4();
+
+    await runSql(
+      'INSERT INTO images (id, task_id, staff_id, staff_name, images, created_at) VALUES (?,?,?,?,?,?)',
+      [id, taskId, staffId, staffName, publicUrl, createdAt]
+    );
+
+    res.json({
+      ok: true,
+      fileId,
+      url: publicUrl,
+      id: id
+    });
+  } catch (err) {
+    console.error('Drive upload error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/images/:task_id', async (req, res) => {
+  try {
+    if (!req.params.task_id) {
+      return res.status(500).json({ error: 'Task Id is required' });
+    }
+
+    const rows = await allSql('SELECT * FROM images WHERE task_id=?', [req.params.task_id]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/images', async (req, res) => {
+  try {
+    if (!req.body.taskIds) {
+      return res.status(500).json({ error: 'Task Id is required' });
+    }
+
+    // Build dynamic placeholders for IN clause
+    const placeholders = req.body.taskIds.map(() => '?').join(',');
+
+    const rows = await allSql(`SELECT * FROM images WHERE task_id IN (${placeholders})`, req.body.taskIds);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+})
 
 // Simple helpers
 function runSql(sql, params=[]) {
@@ -1554,7 +1674,7 @@ const genericCrud = (table, fields) => {
 
 // Initialize for smaller tables
 // genericCrud('task_comments', ['task_id', 'comment', 'is_read', 'staff_id']);
-genericCrud('images', ['task_id', 'staff_id', 'images']);
+// genericCrud('images', ['task_id', 'staff_id', 'images']);
 // genericCrud('task_instructions', ['task_id', 'ques', 'resp_type', 'reply', 'replied_at']);
 genericCrud('task_team_members', ['team_id', 'task_id', 'staff_id']);
 

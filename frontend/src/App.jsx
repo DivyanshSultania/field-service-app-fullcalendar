@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import LeftSidebar from './components/LeftSidebar';
 import CalendarView from './components/CalendarView';
 import StaffManagement from './components/StaffManagement';
+import AdminManagement from './components/AdminManagement';
 import TeamManagement from './components/TeamManagement';
 import ClientsManagement from './components/ClientsManagement';
 import Schedule from './pages/Schedule';
@@ -66,6 +67,8 @@ function AuthenticatedApp({ user, onLogout }) {
       switch (view) {
         case 'staff':
           return <StaffManagement />;
+        case 'admin':
+          return <AdminManagement />;
         case 'client':
           return <ClientsManagement />;
         case 'team':
