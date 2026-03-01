@@ -40,7 +40,10 @@ import {authFetch} from './../pages/utils';
 //   });
 // }
 
-export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
+export default function CalendarView({
+  filter = { type: 'staff', ids: [], hiddenDays: [] },
+  onHiddenDaysChange
+}) {
   function showToast(msg, bgColor) {
     const div = document.createElement('div');
     div.innerText = msg || 'Unexpected error';
@@ -64,6 +67,7 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
   // Global Calendar State
   const calendarRef = useRef(null);
   const [manageLoading, setManageLoading] = useState(false);
+  const [currentView, setCurrentView] = useState('timeGridWeek');
 
 
   // DB Fetched Values
@@ -127,6 +131,16 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
   const VITE_KEY = import.meta.env.VITE_API_URL;
 
+  const dayOptions = [
+    { value: 0, label: 'Sunday' },
+    { value: 1, label: 'Monday' },
+    { value: 2, label: 'Tuesday' },
+    { value: 3, label: 'Wednesday' },
+    { value: 4, label: 'Thursday' },
+    { value: 5, label: 'Friday' },
+    { value: 6, label: 'Saturday' }
+  ];
+
   console.log('-------VITE_KEY-------', VITE_KEY);
 
   // Fetch teams, staff, clients, locations
@@ -146,6 +160,15 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
     window.addEventListener("refreshCalendar", listener);
     return () => window.removeEventListener("refreshCalendar", listener);
   }, []);
+
+  const handleHiddenDaysChange = (e) => {
+    const selected = Array.from(e.target.selectedOptions || []).map(opt =>
+      Number(opt.value)
+    );
+    if (onHiddenDaysChange) {
+      onHiddenDaysChange(selected);
+    }
+  };
 
   async function computeAndSaveTravelDistance(task, isBtnClick) {
     debugger;
@@ -1742,25 +1765,29 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
 
                     {/* Start Shift Section */}
                     <div style={{marginTop:8, borderRadius:8}}>
+                      {/* Start: disabled when started_at or stopped_at. Stop (End Shift): disabled when stopped_at. */}
                       {(!currentTask.started_at && !currentTask.stopped_at) ? (
                         <div>
-                          <button className="btn primary" onClick={async ()=>{
-                            // start shift locally and persist
-                            const started = new Date().toISOString();
-                            handleShiftUpdate({ started_at: started });
-                            try {
-                              await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, started_at: started}) });
-                            } catch(e){ console.error('start shift save error', e); }
+                          <button
+                            className="btn primary"
+                            disabled={!!currentTask.started_at || !!currentTask.stopped_at}
+                            onClick={async ()=>{
+                              // start shift locally and persist
+                              const started = new Date().toISOString();
+                              handleShiftUpdate({ started_at: started });
+                              try {
+                                await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, started_at: started}) });
+                              } catch(e){ console.error('start shift save error', e); }
 
-                            // start timer UI
-                            setShiftTimerSeconds(0);
-                            if (shiftTimerRef.current) clearInterval(shiftTimerRef.current);
-                            shiftTimerRef.current = setInterval(()=>{
-                              setShiftTimerSeconds(s => s + 1);
-                            }, 1000);
-                          }}>▶ Start Shift</button>
+                              // start timer UI
+                              setShiftTimerSeconds(0);
+                              if (shiftTimerRef.current) clearInterval(shiftTimerRef.current);
+                              shiftTimerRef.current = setInterval(()=>{
+                                setShiftTimerSeconds(s => s + 1);
+                              }, 1000);
+                            }}>▶ Start Shift</button>
                         </div>
-                      ) : (currentTask.started_at && !currentTask.stopped_at && (
+                      ) : (currentTask.started_at && !currentTask.stopped_at) ? (
                         <div style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, background:'#fff'}}>
                           <div style={{fontWeight:600}}>Shift Started</div>
                           <div style={{fontSize:13,color:'#6b7280'}}>Shift started at {currentTask.started_at ? dayjs(currentTask.started_at).format('h:mm a') : '-'}</div>
@@ -1769,21 +1796,33 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
                               // Pause: stop timer
                               if (shiftTimerRef.current) { clearInterval(shiftTimerRef.current); shiftTimerRef.current = null; }
                             }}>Pause</button>
-                            <button className="btn" onClick={async ()=>{
-                              // End shift: set stopped_at
-                              const stopped = new Date().toISOString();
-                              handleShiftUpdate({ stopped_at: stopped });
-                              try {
-                                await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, stopped_at: stopped}) });
-                              } catch(e){ console.error('end shift save error', e); }
-                              if (shiftTimerRef.current) { clearInterval(shiftTimerRef.current); shiftTimerRef.current = null; }
-                            }}>End Shift</button>
+                            <button
+                              className="btn"
+                              disabled={!!currentTask.stopped_at}
+                              onClick={async ()=>{
+                                // End shift: set stopped_at
+                                const stopped = new Date().toISOString();
+                                handleShiftUpdate({ stopped_at: stopped });
+                                try {
+                                  await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...currentTask, stopped_at: stopped}) });
+                                } catch(e){ console.error('end shift save error', e); }
+                                if (shiftTimerRef.current) { clearInterval(shiftTimerRef.current); shiftTimerRef.current = null; }
+                              }}>End Shift</button>
                           </div>
                           <div style={{marginTop:10}}>
                             <div>Timer: <strong>{Math.floor(shiftTimerSeconds/3600)}:{String(Math.floor((shiftTimerSeconds%3600)/60)).padStart(2,'0')}:{String(shiftTimerSeconds%60).padStart(2,'0')}</strong></div>
                           </div>
                         </div>
-                      ))}
+                      ) : currentTask.stopped_at ? (
+                        <div style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, background:'#f9fafb'}}>
+                          <div style={{fontWeight:600, color:'#6b7280'}}>Shift completed</div>
+                          <div style={{fontSize:13, color:'#6b7280', marginTop:4}}>Started at {currentTask.started_at ? dayjs(currentTask.started_at).format('h:mm a') : '-'}, ended at {dayjs(currentTask.stopped_at).format('h:mm a')}</div>
+                          <div style={{marginTop:8}}>
+                            <button className="btn primary" disabled>▶ Start Shift</button>
+                            <span style={{marginLeft:8, fontSize:12, color:'#6b7280'}}>Start and End are disabled when shift is completed</span>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                     
 
@@ -2228,7 +2267,31 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
           Loading...
         </div>
       )}
-    <div style={{ display: 'flex', flex: 1 }}>
+      <div style={{ padding: '8px 16px' }}>
+        <label style={{ fontSize: 13, marginRight: 8 }}>
+          Hide days (week view only):
+        </label>
+        <select
+          multiple
+          value={filter.hiddenDays || []}
+          onChange={handleHiddenDaysChange}
+          disabled={currentView !== 'timeGridWeek'}
+          style={{
+            minWidth: 220,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid #d1d5db',
+            background: '#fff'
+          }}
+        >
+          {dayOptions.map(d => (
+            <option key={d.value} value={d.value}>
+              {d.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div style={{ display: 'flex', flex: 1 }}>
         <div style={{ flex: 1 }}>
           <FullCalendar
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
@@ -2257,6 +2320,8 @@ export default function CalendarView({filter = { type: 'staff', ids: [] }}) {
             events={events}
             editable={true}
             // eventDrop={handleEventDrop}
+            datesSet={arg => setCurrentView(arg.view.type)}
+            hiddenDays={currentView === 'timeGridWeek' ? (filter.hiddenDays || []) : []}
             ref={calendarRef}
             height="auto" />
         </div>

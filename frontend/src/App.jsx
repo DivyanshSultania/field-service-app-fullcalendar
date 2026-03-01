@@ -15,7 +15,7 @@ function AuthenticatedApp({ user, onLogout }) {
     const [tasks, setTasks] = useState([]);
     const [teams, setTeams] = useState([]);
     const [clients, setClients] = useState([]);
-    const [filter, setFilter] = useState({ type: 'staff', ids: [] });
+    const [filter, setFilter] = useState({ type: 'staff', ids: [], hiddenDays: [] });
     const [view, setView] = useState('calendar');
   
     const token = localStorage.getItem("token");
@@ -76,7 +76,14 @@ function AuthenticatedApp({ user, onLogout }) {
         case 'schedule':
           return <Schedule />;
         default:
-          return <CalendarView filter={filter} />;
+          return (
+            <CalendarView
+              filter={filter}
+              onHiddenDaysChange={hiddenDays =>
+                setFilter(prev => ({ ...prev, hiddenDays }))
+              }
+            />
+          );
       }
     }
   
@@ -86,7 +93,9 @@ function AuthenticatedApp({ user, onLogout }) {
           staff={staff}
           clients={clients}
           teams={teams}
-          onFilterChange={(type, ids) => setFilter({ type, ids })}
+          onFilterChange={(type, ids) =>
+            setFilter(prev => ({ ...prev, type, ids }))
+          }
           onNavigate={setView}
         />
   
