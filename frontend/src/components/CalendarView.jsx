@@ -6,6 +6,7 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import dayjs from 'dayjs';
 import Modal from './Modal';
 import RecurringShiftSettings from './RecurringShiftSettings'
+import TaskMapModal from './TaskMapModal';
 import { GOOGLE_MAPS_API_KEY, loadGoogleMapsApi } from '../utils/googleMaps';
 import {authFetch} from './../pages/utils';
 
