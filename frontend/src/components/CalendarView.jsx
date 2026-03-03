@@ -144,7 +144,9 @@ export default function CalendarView({
   const [locationLoadingDelete, setLocationLoadingDelete] = useState({});
 
   const VITE_KEY = import.meta.env.VITE_API_URL;
-  const R2_PUBLIC_URL = import.meta.env.R2_PUBLIC_URL;
+  const R2_PUBLIC_URL = 'https://pub-ac8edfc52ef04beba837f1804a4abf42.r2.dev';
+
+  console.log('VITE_KEY', import.meta.env)
 
   const dayOptions = [
     { value: 0, label: 'Sunday' },
