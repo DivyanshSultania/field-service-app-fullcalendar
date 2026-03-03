@@ -144,6 +144,7 @@ export default function CalendarView({
   const [locationLoadingDelete, setLocationLoadingDelete] = useState({});
 
   const VITE_KEY = import.meta.env.VITE_API_URL;
+  const R2_PUBLIC_URL = import.meta.env.R2_PUBLIC_URL;
 
   const dayOptions = [
     { value: 0, label: 'Sunday' },
@@ -701,7 +702,7 @@ export default function CalendarView({
                         {renderTaskHeader(t)}
                         <div style={{ padding: 12, display: 'flex', flexWrap: 'wrap', gap: 12 }}>
                           {rows.map(img => {
-                            const url = `${import.meta.env.R2_PUBLIC_URL}/(${img.images || img.url})`;
+                            const url = `${R2_PUBLIC_URL}/(${img.images || img.url})`;
                             if (!url) return null;
                             return (
                               <div key={img.id || url} style={{ width: 260 }}>
