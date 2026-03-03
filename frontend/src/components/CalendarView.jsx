@@ -402,7 +402,13 @@ export default function CalendarView({
 
   useEffect(() => {
     updateCalendarView();
-  }, [tasks, filter, staffs]);
+  }, [
+    tasks, 
+    filter?.type,
+    (filter?.ids || []).join(','),
+    (filter?.hiddenDays || []).join(','),  
+    staffs
+  ]);
 
   function computePaymentsFromTasks(scopedTasks) {
     // Group by supervisor staff_id (consistent with tasks schema)
@@ -2974,7 +2980,16 @@ export default function CalendarView({
         </div>
       </div>
       <div style={{ display: 'flex', flex: 1 }}>
-        <div style={{ flex: 1 }}>
+        {/* <div style={{ flex: 1 }}> */}
+        <div
+          style={{
+            maxHeight: '75vh',
+            width: '100%',
+            overflowY: 'auto',
+            border: '1px solid #e5e7eb',
+            borderRadius: 8
+          }}
+        >
           <FullCalendar
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
             initialView='timeGridWeek'
@@ -3008,13 +3023,48 @@ export default function CalendarView({
             events={events}
             editable={true}
             // eventDrop={handleEventDrop}
+            // datesSet={arg => {
+            //   debugger;
+            //   setCurrentView(arg.view.type);
+            //   setCurrentRange({ start: arg.start, end: arg.end });
+            // }}
             datesSet={arg => {
-              setCurrentView(arg.view.type);
-              setCurrentRange({ start: arg.start, end: arg.end });
+              const newView = arg.view.type;
+            
+              setCurrentView(prev => {
+                if (prev === newView) return prev;
+                return newView;
+              });
+            
+              setCurrentRange(prev => {
+                const sameStart = prev?.start?.getTime?.() === arg.start.getTime();
+                const sameEnd = prev?.end?.getTime?.() === arg.end.getTime();
+            
+                if (sameStart && sameEnd) return prev;
+            
+                return { start: arg.start, end: arg.end };
+              });
             }}
             hiddenDays={currentView === 'timeGridWeek' ? (filter.hiddenDays || []) : []}
             ref={calendarRef}
-            height="auto" />
+
+            expandRows={true}
+            stickyHeaderDates={true}
+            allDaySlot={true}
+
+            /* Scroll to bottom by default */
+            scrollTime="08:00:00"
+
+            /* Increase hour height */
+            // slotMinTime={'00:00:00'}
+            // slotMaxTime={'24:00:00'}
+            // slotDuration={'00:30:00'}
+            // slotLabelInterval={'01:00:00'}
+
+            /* Smaller task font */
+            eventClassNames={() => 'custom-event-small'}
+            
+            height={600} />
         </div>
         {EditTaskModal()}
         {shiftModal()}

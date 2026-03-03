@@ -326,3 +326,23 @@ input[type="datetime-local"], input[type="text"], input[type="color"], input { p
   color: red;
   margin-bottom: 10px;
 }
+
+
+/* Increase height of each hour row */
+.fc .fc-timegrid-slot {
+  height: 40px;
+}
+
+/* Smaller font inside calendar task */
+.custom-event-small {
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+}
+
+/* Make all-day row sticky */
+.fc .fc-timegrid-allday {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #fff;
+}
