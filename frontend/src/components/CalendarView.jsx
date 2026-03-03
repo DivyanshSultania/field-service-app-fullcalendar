@@ -2984,6 +2984,7 @@ export default function CalendarView({
         <div
           style={{
             maxHeight: '75vh',
+            width: '100%',
             overflowY: 'auto',
             border: '1px solid #e5e7eb',
             borderRadius: 8
@@ -3062,8 +3063,8 @@ export default function CalendarView({
 
             /* Smaller task font */
             eventClassNames={() => 'custom-event-small'}
-
-            height="auto" />
+            
+            height={600} />
         </div>
         {EditTaskModal()}
         {shiftModal()}
