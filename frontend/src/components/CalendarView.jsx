@@ -701,7 +701,7 @@ export default function CalendarView({
                         {renderTaskHeader(t)}
                         <div style={{ padding: 12, display: 'flex', flexWrap: 'wrap', gap: 12 }}>
                           {rows.map(img => {
-                            const url = img.images || img.url;
+                            const url = `${import.meta.env.R2_PUBLIC_URL}/(${img.images || img.url})`;
                             if (!url) return null;
                             return (
                               <div key={img.id || url} style={{ width: 260 }}>
