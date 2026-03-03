@@ -6,6 +6,7 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import dayjs from 'dayjs';
 import Modal from './Modal';
 import RecurringShiftSettings from './RecurringShiftSettings'
+import TaskMapModal from './TaskMapModal';
 import { GOOGLE_MAPS_API_KEY, loadGoogleMapsApi } from '../utils/googleMaps';
 import {authFetch} from './../pages/utils';
 
@@ -85,6 +86,7 @@ export default function CalendarView({
   // Temp States
   const [currentTask, setCurrentTask] = useState({});
   const [manageCleaners, setManageCleaners] = useState([]);
+  const [mapModalOpen, setMapModalOpen] = useState(false);
 
   // Manage Staff Modal States
   const [manageStaffModalSupervisor, setManageStaffModalSupervisor] = useState(null);
@@ -1001,12 +1003,33 @@ export default function CalendarView({
       // Fetch enriched task (joins staff, client, location, team)
       const fullRes = await authFetch(`${VITE_KEY}/api/tasks/${created.id}`);
       const fullTask = await fullRes.json();
+
+      let taskTitle = '';
+
+      if (fullTask.task_name) {
+        taskTitle += fullTask.task_name;
+        taskTitle += '\n';
+      }
+
+      if (fullTask.staff_name) {
+        taskTitle += fullTask.staff_name;
+        taskTitle += ' (S)\n';
+      }
+
+      if (fullTask.task_team_members_name?.length > 0) {
+        fullTask.task_team_members_name.forEach((staffName) => {
+          taskTitle += staffName;
+          taskTitle += ', ';
+        });
+
+        taskTitle = taskTitle.slice(0, -2);
+      }
   
       // Add to FullCalendar
       const calApi = calendarRef.current.getApi();
       calApi.addEvent({
         id: fullTask.id,
-        title: fullTask.task_name + (fullTask.staff_name ? '\n' + fullTask.staff_name : ''),
+        title: taskTitle,
         start: fullTask.start_time,
         end: fullTask.end_time,
         staff_id: fullTask.staff_id,
@@ -1624,7 +1647,7 @@ export default function CalendarView({
     });
   }
 
-  function EditTaskModal() {
+  function EditTaskModal() {    
     if (!currentTask) {
       return null;
     }
@@ -2424,6 +2447,16 @@ export default function CalendarView({
                       </div>
                     </div>
 
+                    {currentTask.location_id && (
+                      <button
+                        className="btn"
+                        style={{ marginTop: 10 }}
+                        onClick={() => setMapModalOpen(true)}
+                      >
+                        View Map
+                      </button>
+                    )}
+
                     {/* Travel Distance Section */}
                     <div style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, background:'#fff'}}>
                       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
@@ -2678,6 +2711,24 @@ export default function CalendarView({
           {TeamSelectionModal()}
           {ManageStaffModal()}
           {LocationSelectionModal()}
+          <TaskMapModal
+            open={mapModalOpen}
+            onClose={() => setMapModalOpen(false)}
+            assignedLocation={
+              locations.find(l => l.id === currentTask.location_id)
+            }
+            startLocation={{
+              lat: currentTask.started_lat,
+              lng: currentTask.started_lng
+            }}
+            stopLocation={{
+              lat: currentTask.stopped_lat,
+              lng: currentTask.stopped_lng
+            }}
+            radiusMeters={
+              locations.find(l => l.id === currentTask.location_id)?.radius_meters
+            }
+          />
         </div>
       </Modal>
     );

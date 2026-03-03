@@ -28,7 +28,7 @@ export default function LeftSidebar({ staff = [], clients = [], teams = [], onNa
       </div>
 
       <div className="menu">
-        <div
+        {/* <div
           className={`menu-item ${activeMenu === 'profile' ? 'active' : ''}`}
           onClick={() => setActiveMenu('profile')}
         >
@@ -39,7 +39,7 @@ export default function LeftSidebar({ staff = [], clients = [], teams = [], onNa
           onClick={() => setActiveMenu('supervisor')}
         >
           🧑‍💼 Supervisor
-        </div>
+        </div> */}
         <div
           className={`menu-item ${activeMenu === 'tables' ? 'active' : ''}`}
           onClick={() => {
@@ -50,7 +50,7 @@ export default function LeftSidebar({ staff = [], clients = [], teams = [], onNa
           📋 Tables
         </div>
         <div className="submenu">
-          <div className="menu-item">🧹 Cleaners Roster</div>
+          {/* <div className="menu-item">🧹 Cleaners Roster</div> */}
           <div
             className={`menu-item ${activeMenu === 'staff' ? 'active' : ''}`}
             onClick={() => {
