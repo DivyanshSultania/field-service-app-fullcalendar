@@ -706,7 +706,7 @@ export default function CalendarView({
                           {rows.map(img => {
                             console.log('R2_PUBLIC_URL', R2_PUBLIC_URL);
                             debugger;
-                            const url = `${R2_PUBLIC_URL}/${img.images || img.url}`;
+                            const url = `${R2_PUBLIC_URL}${img.images || img.url}`;
                             if (!url) return null;
                             return (
                               <div key={img.id || url} style={{ width: 260 }}>
