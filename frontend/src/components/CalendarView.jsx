@@ -68,6 +68,7 @@ export default function CalendarView({
   const calendarRef = useRef(null);
   const [manageLoading, setManageLoading] = useState(false);
   const [currentView, setCurrentView] = useState('timeGridWeek');
+  const [currentRange, setCurrentRange] = useState({ start: null, end: null });
   const [dayDropdownOpen, setDayDropdownOpen] = useState(false);
   const dayDropdownRef = useRef(null);
 
@@ -109,6 +110,17 @@ export default function CalendarView({
   const [taskMessages, setTaskMessages] = useState([]);
   const [newMessageText, setNewMessageText] = useState('');
   const [travelInfo, setTravelInfo] = useState({ distance_km: null, duration_min: null, from_location: null });
+
+  // Calendar-level Details Modal (Images / Comments / Instructions Reply / Payments)
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false);
+  const [detailsTab, setDetailsTab] = useState('Images');
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState('');
+  const [detailsImages, setDetailsImages] = useState([]);
+  const [detailsComments, setDetailsComments] = useState([]);
+  const [detailsInstructionReplies, setDetailsInstructionReplies] = useState([]);
+  const [detailsPayments, setDetailsPayments] = useState([]);
+  const [detailsReloadKey, setDetailsReloadKey] = useState(0);
 
 
   // Modal State
@@ -281,18 +293,58 @@ export default function CalendarView({
     return luminance < 140;
   };
 
-  function updateCalendarView() {
-    let filteredTasks = tasks;
+  function taskMatchesCurrentFilter(t) {
+    if (!filter?.ids || filter.ids.length === 0) return true;
 
-    if (filter.ids.length > 0) {
-      if (filter.type === 'staff') {
-        filteredTasks = tasks.filter(t => filter.ids.includes(t.staff_id));
-      } else if (filter.type === 'client') {
-        filteredTasks = tasks.filter(t => filter.ids.includes(t.client_id));
-      } else if (filter.type === 'team') {
-        filteredTasks = tasks.filter(t => filter.ids.includes(t.team_id));
-      }
+    if (filter.type === 'staff') {
+      // Match supervisor assignment OR team-member assignment
+      const memberIds = Array.isArray(t.task_team_members) ? t.task_team_members : [];
+      return filter.ids.includes(t.staff_id) || memberIds.some(id => filter.ids.includes(id));
     }
+    if (filter.type === 'client') return filter.ids.includes(t.client_id);
+    if (filter.type === 'team') return filter.ids.includes(t.team_id);
+    return true;
+  }
+
+  function getActiveRange() {
+    // Prefer the range captured from FullCalendar, fallback to calendar api.
+    if (currentRange?.start && currentRange?.end) {
+      return { start: new Date(currentRange.start), end: new Date(currentRange.end) };
+    }
+
+    const api = calendarRef.current?.getApi?.();
+    const view = api?.view;
+    if (view?.activeStart && view?.activeEnd) {
+      return { start: view.activeStart, end: view.activeEnd };
+    }
+
+    // Fallback: "today" day range
+    const now = new Date();
+    const s = new Date(now);
+    s.setHours(0, 0, 0, 0);
+    const e = new Date(s);
+    e.setDate(e.getDate() + 1);
+    return { start: s, end: e };
+  }
+
+  function isTaskInActiveRange(t, range) {
+    if (!t?.start_time) return false;
+    const ts = new Date(t.start_time);
+    // Include tasks that start in [start, end)
+    return ts >= range.start && ts < range.end;
+  }
+
+  function isTaskHiddenByWeekHiddenDays(t) {
+    if (currentView !== 'timeGridWeek') return false;
+    const hidden = filter?.hiddenDays || [];
+    if (!hidden.length) return false;
+    if (!t?.start_time) return false;
+    const dow = new Date(t.start_time).getDay(); // 0..6
+    return hidden.includes(dow);
+  }
+
+  function updateCalendarView() {
+    let filteredTasks = tasks.filter(taskMatchesCurrentFilter);
 
     const ev = filteredTasks.map(t => {
       const supervisor = staffs.find(s => s.id === t.staff_id);
@@ -346,6 +398,503 @@ export default function CalendarView({
   useEffect(() => {
     updateCalendarView();
   }, [tasks, filter, staffs]);
+
+  function computePaymentsFromTasks(scopedTasks) {
+    // Group by supervisor staff_id (consistent with tasks schema)
+    const byStaff = new Map();
+    for (const t of scopedTasks) {
+      const staffId = t.staff_id || 'unknown';
+      const staffName =
+        staffs.find(s => s.id === staffId)?.name ||
+        t.staff_name ||
+        'Unknown';
+      if (!byStaff.has(staffId)) {
+        byStaff.set(staffId, { staffId, staffName, rows: [] });
+      }
+
+      const schedMinutes = t.start_time && t.end_time
+        ? Math.max(0, Math.round((new Date(t.end_time) - new Date(t.start_time)) / 60000))
+        : 0;
+
+      const logMinutes = (t.started_at && t.stopped_at)
+        ? Math.max(0, Math.round((new Date(t.stopped_at) - new Date(t.started_at)) / 60000))
+        : 0;
+
+      const amountNum = t.payment_amount != null && t.payment_amount !== ''
+        ? Number(t.payment_amount)
+        : 0;
+
+      byStaff.get(staffId).rows.push({
+        task_id: t.id,
+        date: t.start_time,
+        shift_name: t.task_name,
+        sched_min: schedMinutes,
+        log_min: logMinutes,
+        payment_type: t.payment_type || '',
+        amount: Number.isFinite(amountNum) ? amountNum : 0
+      });
+    }
+
+    return Array.from(byStaff.values()).map(g => ({
+      ...g,
+      rows: g.rows.sort((a, b) => new Date(a.date) - new Date(b.date))
+    })).sort((a, b) => (a.staffName || '').localeCompare(b.staffName || ''));
+  }
+
+  function formatMinutesAsHhMm(min) {
+    const m = Math.max(0, Number(min) || 0);
+    const hh = String(Math.floor(m / 60)).padStart(2, '0');
+    const mm = String(m % 60).padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+
+  function openDetailsModal() {
+    setDetailsTab('Images');
+    setDetailsModalOpen(true);
+  }
+
+  useEffect(() => {
+    if (!detailsModalOpen) return;
+    let cancelled = false;
+
+    const load = async () => {
+      setDetailsLoading(true);
+      setDetailsError('');
+
+      try {
+        const range = getActiveRange();
+        const scopedTasks = tasks
+          .filter(taskMatchesCurrentFilter)
+          .filter(t => isTaskInActiveRange(t, range))
+          .filter(t => !isTaskHiddenByWeekHiddenDays(t));
+
+        const taskIds = scopedTasks.map(t => t.id).filter(Boolean);
+
+        // Payments can be computed from scoped tasks directly.
+        const payments = computePaymentsFromTasks(scopedTasks);
+
+        if (taskIds.length === 0) {
+          if (cancelled) return;
+          setDetailsImages([]);
+          setDetailsComments([]);
+          setDetailsInstructionReplies([]);
+          setDetailsPayments(payments);
+          setDetailsLoading(false);
+          return;
+        }
+
+        const [imagesRes, commentsRes, instRes] = await Promise.all([
+          authFetch(`${VITE_KEY}/api/images`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ taskIds })
+          }),
+          authFetch(`${VITE_KEY}/api/task_comments/bulk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ taskIds })
+          }),
+          authFetch(`${VITE_KEY}/api/task_instructions/bulk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ taskIds })
+          })
+        ]);
+
+        const imagesJson = await imagesRes.json().catch(() => []);
+
+        let commentsJson = [];
+        if (commentsRes.ok) {
+          commentsJson = await commentsRes.json().catch(() => []);
+        } else {
+          // Fallback (in case backend bulk endpoint isn't deployed yet)
+          const perTask = await Promise.all(
+            taskIds.map(id =>
+              authFetch(`${VITE_KEY}/api/task_comments/${id}`)
+                .then(r => (r.ok ? r.json() : []))
+                .catch(() => [])
+            )
+          );
+          commentsJson = perTask.flat();
+        }
+
+        let instJson = [];
+        if (instRes.ok) {
+          instJson = await instRes.json().catch(() => []);
+        } else {
+          // Fallback (in case backend bulk endpoint isn't deployed yet)
+          const perTask = await Promise.all(
+            taskIds.map(id =>
+              authFetch(`${VITE_KEY}/api/task_instructions/${id}`)
+                .then(r => (r.ok ? r.json() : []))
+                .catch(() => [])
+            )
+          );
+          instJson = perTask.flat();
+        }
+
+        if (cancelled) return;
+        setDetailsImages(Array.isArray(imagesJson) ? imagesJson : []);
+        setDetailsComments(Array.isArray(commentsJson) ? commentsJson : []);
+        setDetailsInstructionReplies(Array.isArray(instJson) ? instJson : []);
+        setDetailsPayments(payments);
+      } catch (e) {
+        if (cancelled) return;
+        console.error('Details modal load failed', e);
+        setDetailsError(e?.message || 'Failed to load details');
+      } finally {
+        if (!cancelled) setDetailsLoading(false);
+      }
+    };
+
+    load();
+    return () => { cancelled = true; };
+  }, [
+    detailsModalOpen,
+    detailsReloadKey,
+    currentView,
+    currentRange?.start,
+    currentRange?.end,
+    tasks,
+    filter?.type,
+    (filter?.ids || []).join(','),
+    (filter?.hiddenDays || []).join(',')
+  ]);
+
+  function DetailsModal() {
+    if (!detailsModalOpen) return null;
+
+    const range = getActiveRange();
+    const scopedTasks = tasks
+      .filter(taskMatchesCurrentFilter)
+      .filter(t => isTaskInActiveRange(t, range))
+      .filter(t => !isTaskHiddenByWeekHiddenDays(t));
+
+    const tabs = ['Images', 'Comments', 'Instructions Reply', 'Payments'];
+
+    const headerLine = () => {
+      const start = dayjs(range.start).format('YYYY-MM-DD');
+      const end = dayjs(new Date(range.end.getTime() - 1)).format('YYYY-MM-DD');
+      const label = currentView === 'dayGridMonth'
+        ? `Month view range: ${start} → ${end}`
+        : currentView === 'timeGridDay'
+          ? `Day: ${start}`
+          : `Range: ${start} → ${end}`;
+
+      const filterLabel = filter?.ids?.length
+        ? `${filter.type}: ${filter.ids.length} selected`
+        : 'No filter selected';
+
+      const hiddenLabel =
+        currentView === 'timeGridWeek' && (filter.hiddenDays || []).length
+          ? `Hidden days: ${(filter.hiddenDays || []).length}`
+          : null;
+
+      return `${label} • ${filterLabel}${hiddenLabel ? ` • ${hiddenLabel}` : ''}`;
+    };
+
+    function groupRowsByTaskId(rows, key = 'task_id') {
+      const map = new Map();
+      for (const r of rows) {
+        const tid = r?.[key];
+        if (!tid) continue;
+        if (!map.has(tid)) map.set(tid, []);
+        map.get(tid).push(r);
+      }
+      return map;
+    }
+
+    const imagesByTask = groupRowsByTaskId(detailsImages, 'task_id');
+    const commentsByTask = groupRowsByTaskId(detailsComments, 'task_id');
+    const instructionsByTask = groupRowsByTaskId(detailsInstructionReplies, 'task_id');
+
+    function renderTaskHeader(t) {
+      const clientName = clients.find(c => c.id === t.client_id)?.client_name || t.client_name || '';
+      const staffName = staffs.find(s => s.id === t.staff_id)?.name || t.staff_name || '';
+      const when = t.start_time ? dayjs(t.start_time).format('YYYY-MM-DD hh:mm a') : '';
+      const title = `${t.task_name || 'Shift'}${clientName ? ` • ${clientName}` : ''}`;
+      const subtitle = `${when}${staffName ? ` • ${staffName}` : ''}`;
+
+      return (
+        <div style={{ padding: '10px 12px', background: '#e0f2fe', fontStyle: 'italic' }}>
+          <div style={{ fontWeight: 600, color: '#0f172a' }}>{title}</div>
+          <div style={{ fontSize: 12, color: '#334155' }}>{subtitle}</div>
+        </div>
+      );
+    }
+
+    function renderEmpty(msg) {
+      return (
+        <div style={{ padding: 16, color: '#6b7280', textAlign: 'center' }}>
+          {msg}
+        </div>
+      );
+    }
+
+    return (
+      <Modal open={detailsModalOpen} title="Calendar Details" onClose={() => setDetailsModalOpen(false)}>
+        <div style={{ minWidth: 860, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 12, color: '#6b7280' }}>
+            {headerLine()}
+          </div>
+
+          {/* Tabs */}
+          <div style={{
+            display: 'flex',
+            gap: 8,
+            background: '#f9fafb',
+            borderRadius: 8,
+            padding: 6
+          }}>
+            {tabs.map(tab => (
+              <button
+                key={tab}
+                onClick={() => setDetailsTab(tab)}
+                style={{
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  background: detailsTab === tab ? '#e0f2fe' : 'transparent',
+                  color: detailsTab === tab ? '#0c4a6e' : '#374151',
+                  fontWeight: detailsTab === tab ? 600 : 500
+                }}
+              >
+                {tab}
+              </button>
+            ))}
+            <div style={{ flex: 1 }} />
+            <button
+              className="btn"
+              onClick={() => {
+                setDetailsReloadKey(k => k + 1);
+              }}
+              style={{ alignSelf: 'center' }}
+              type="button"
+            >
+              Refresh
+            </button>
+          </div>
+
+          {detailsError && (
+            <div style={{ background: '#fee2e2', color: '#7f1d1d', padding: 10, borderRadius: 8 }}>
+              {detailsError}
+            </div>
+          )}
+
+          {detailsLoading && (
+            <div style={{ padding: 12, color: '#374151' }}>
+              Loading...
+            </div>
+          )}
+
+          {!detailsLoading && (
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
+              {detailsTab === 'Images' && (
+                <div>
+                  {scopedTasks.length === 0 && renderEmpty('No shifts in the current view range.')}
+                  {scopedTasks.map(t => {
+                    const rows = imagesByTask.get(t.id) || [];
+                    if (rows.length === 0) return null;
+                    return (
+                      <div key={t.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                        {renderTaskHeader(t)}
+                        <div style={{ padding: 12, display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                          {rows.map(img => {
+                            const url = img.images || img.url;
+                            if (!url) return null;
+                            return (
+                              <div key={img.id || url} style={{ width: 260 }}>
+                                <div style={{
+                                  width: '100%',
+                                  height: 160,
+                                  borderRadius: 8,
+                                  border: '1px solid #e5e7eb',
+                                  overflow: 'hidden',
+                                  background: '#f3f4f6'
+                                }}>
+                                  <img
+                                    src={url}
+                                    alt="uploaded"
+                                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                  />
+                                </div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, gap: 8 }}>
+                                  <div style={{ fontSize: 12, color: '#6b7280' }}>
+                                    {img.created_at ? dayjs(img.created_at).format('YYYY-MM-DD HH:mm') : ''}
+                                  </div>
+                                  <a
+                                    href={url}
+                                    download
+                                    style={{
+                                      fontSize: 12,
+                                      textDecoration: 'none',
+                                      background: '#0ea5e9',
+                                      color: '#fff',
+                                      padding: '4px 8px',
+                                      borderRadius: 6
+                                    }}
+                                  >
+                                    Download
+                                  </a>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {detailsImages.length === 0 && scopedTasks.length > 0 && renderEmpty('No images found for the shifts in this range.')}
+                </div>
+              )}
+
+              {detailsTab === 'Comments' && (
+                <div>
+                  {scopedTasks.length === 0 && renderEmpty('No shifts in the current view range.')}
+                  {scopedTasks.map(t => {
+                    const rows = commentsByTask.get(t.id) || [];
+                    if (rows.length === 0) return null;
+                    return (
+                      <div key={t.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                        {renderTaskHeader(t)}
+                        <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          {rows
+                            .slice()
+                            .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+                            .map(c => (
+                              <div
+                                key={c.id}
+                                style={{
+                                  border: '1px solid #e5e7eb',
+                                  borderRadius: 8,
+                                  padding: 10,
+                                  background: '#fff'
+                                }}
+                              >
+                                <div style={{ fontSize: 13, color: '#111827', whiteSpace: 'pre-wrap' }}>
+                                  {c.comment || ''}
+                                </div>
+                                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
+                                  {c.staff_id ? `Staff: ${staffs.find(s => s.id === c.staff_id)?.name || c.staff_id}` : ''}
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {detailsComments.length === 0 && scopedTasks.length > 0 && renderEmpty('No comments found for the shifts in this range.')}
+                </div>
+              )}
+
+              {detailsTab === 'Instructions Reply' && (
+                <div>
+                  {scopedTasks.length === 0 && renderEmpty('No shifts in the current view range.')}
+                  {scopedTasks.map(t => {
+                    const rows = instructionsByTask.get(t.id) || [];
+                    if (rows.length === 0) return null;
+                    return (
+                      <div key={t.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                        {renderTaskHeader(t)}
+                        <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          {rows.map(inst => (
+                            <div
+                              key={inst.id}
+                              style={{
+                                border: '1px solid #e5e7eb',
+                                borderRadius: 8,
+                                padding: 10,
+                                background: '#fff'
+                              }}
+                            >
+                              <div style={{ fontWeight: 600, color: '#0f172a' }}>
+                                {inst.ques || 'Question'}
+                              </div>
+                              <div style={{ marginTop: 6, whiteSpace: 'pre-wrap', color: '#111827' }}>
+                                {inst.reply || '-'}
+                              </div>
+                              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
+                                {inst.replied_at ? dayjs(inst.replied_at).format('YYYY-MM-DD HH:mm') : ''}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {detailsInstructionReplies.length === 0 && scopedTasks.length > 0 && renderEmpty('No instruction replies found for the shifts in this range.')}
+                </div>
+              )}
+
+              {detailsTab === 'Payments' && (
+                <div style={{ padding: 12 }}>
+                  {detailsPayments.length === 0 && renderEmpty('No payments data in this range.')}
+                  {detailsPayments.map(group => (
+                    <div key={group.staffId} style={{ marginBottom: 14 }}>
+                      <div style={{ fontWeight: 700, color: '#111827', padding: '6px 0' }}>
+                        {group.staffName}
+                      </div>
+                      <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 10 }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                          <thead>
+                            <tr style={{ background: '#f8fafc' }}>
+                              <th style={{ textAlign: 'left', padding: '8px 10px' }}>Date</th>
+                              <th style={{ textAlign: 'left', padding: '8px 10px' }}>Shift Name</th>
+                              <th style={{ textAlign: 'right', padding: '8px 10px' }}>Sch</th>
+                              <th style={{ textAlign: 'right', padding: '8px 10px' }}>Log</th>
+                              <th style={{ textAlign: 'left', padding: '8px 10px' }}>Type</th>
+                              <th style={{ textAlign: 'right', padding: '8px 10px' }}>Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {group.rows.map(r => (
+                              <tr key={r.task_id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                                <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
+                                  {r.date ? dayjs(r.date).format('YYYY-MM-DD HH:mm') : ''}
+                                </td>
+                                <td style={{ padding: '8px 10px' }}>
+                                  {r.shift_name || ''}
+                                </td>
+                                <td style={{ padding: '8px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                  {formatMinutesAsHhMm(r.sched_min)}
+                                </td>
+                                <td style={{ padding: '8px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                  {formatMinutesAsHhMm(r.log_min)}
+                                </td>
+                                <td style={{ padding: '8px 10px' }}>
+                                  {r.payment_type || ''}
+                                </td>
+                                <td style={{ padding: '8px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                  {Number(r.amount || 0).toFixed(2)}
+                                </td>
+                              </tr>
+                            ))}
+                            {group.rows.length === 0 && (
+                              <tr>
+                                <td colSpan={6} style={{ padding: 10, textAlign: 'center', color: '#6b7280' }}>
+                                  No shifts.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button className="btn" onClick={() => setDetailsModalOpen(false)} type="button">Close</button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
 
   // Handlers
   // --- CALENDAR HANDLERS ---
@@ -2374,7 +2923,7 @@ export default function CalendarView({
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
             initialView='timeGridWeek'
             headerToolbar={{
-              left: 'prev,next today createTask',
+              left: 'prev,next today createTask details',
               center: 'title',
               right: 'dayGridMonth,timeGridWeek,timeGridDay'
             }}
@@ -2388,6 +2937,12 @@ export default function CalendarView({
                     end: new Date(currentDate.setHours(currentDate.getHours() + 1))
                   });
                 }
+              },
+              details: {
+                text: 'Details',
+                click: () => {
+                  openDetailsModal();
+                }
               }
             }}
             selectable={true}
@@ -2397,13 +2952,17 @@ export default function CalendarView({
             events={events}
             editable={true}
             // eventDrop={handleEventDrop}
-            datesSet={arg => setCurrentView(arg.view.type)}
+            datesSet={arg => {
+              setCurrentView(arg.view.type);
+              setCurrentRange({ start: arg.start, end: arg.end });
+            }}
             hiddenDays={currentView === 'timeGridWeek' ? (filter.hiddenDays || []) : []}
             ref={calendarRef}
             height="auto" />
         </div>
         {EditTaskModal()}
         {shiftModal()}
+        {DetailsModal()}
         {/* {LocationSelectionModal()} */}
       </div></>
   );
