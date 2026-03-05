@@ -28,7 +28,7 @@ export default function TaskMapModal({
 
       const map = new maps.Map(mapRef.current, {
         center,
-        zoom: 8
+        zoom: 6
       });
 
       mapInstanceRef.current = map;
@@ -52,61 +52,50 @@ export default function TaskMapModal({
         ? startLng + offset
         : Number(stopLocation?.lng);
 
-
-    const greenPinTarget = {
-        url:
-            "data:image/svg+xml;charset=UTF-8," +
-            encodeURIComponent(`
-            <svg width="40" height="48" viewBox="0 0 24 32">
-                <path d="M12 0C6 0 2 5 2 10c0 7 10 22 10 22s10-15 10-22c0-5-4-10-10-10z"
-                    fill="#16a34a"/>
-                <circle cx="12" cy="10" r="6" fill="white"/>
-                <circle cx="12" cy="10" r="3" fill="#16a34a"/>
-            </svg>
-            `),
-        scaledSize: new maps.Size(40, 48),
-        anchor: new maps.Point(20, 48)
-    };
-
-    const redTargetIcon = {
-        url:
-          "data:image/svg+xml;charset=UTF-8," +
-          encodeURIComponent(`
-            <svg width="42" height="42" viewBox="0 0 24 24">
-              <!-- outer ring -->
-              <circle cx="12" cy="12" r="10" fill="#dc2626"/>
-              <!-- middle ring -->
-              <circle cx="12" cy="12" r="6" fill="white"/>
-              <!-- center -->
-              <circle cx="12" cy="12" r="3" fill="#dc2626"/>
-            </svg>
-          `),
-        scaledSize: new maps.Size(42, 42),
-        anchor: new maps.Point(21, 21)
-    };
-
-    debugger;
+    // Create an info window to share between markers.
+    const infoWindow = new google.maps.InfoWindow();
 
     if (startLat && startLng) {
         // Start marker
-        new maps.Marker({
+       const startMarker = new maps.Marker({
             position: { lat: startLat, lng: startLng },
             map,
-            // title: "Task Started Here",
+            title: "Start",
+            label: "A",
+            animation: maps.Animation.DROP,
             // icon: greenPinTarget
         });
+
+        startMarker.addListener("click", () => {
+            infoWindow.close();
+            infoWindow.setContent(startMarker.getTitle());
+            infoWindow.open(startMarker.getMap(), startMarker);
+          });
     }
     
 
     if (stopLat && stopLng) {
         // Stop marker
-        new maps.Marker({
+        const ednMarker = new maps.Marker({
             position: { lat: stopLat, lng: stopLng },
             map,
-            // title: "Task Stopped Here",
+            title: "End",
+            label: "B",
+            animation: maps.Animation.DROP,
             // icon: redTargetIcon
         });
+
+        ednMarker.addListener("click", () => {
+            infoWindow.close();
+            infoWindow.setContent(ednMarker.getTitle());
+            infoWindow.open(ednMarker.getMap(), ednMarker);
+          });
+
+        
     }
+
+    
+    
 
     //   // 🔵 Assigned Location Marker
     //   new maps.Marker({
