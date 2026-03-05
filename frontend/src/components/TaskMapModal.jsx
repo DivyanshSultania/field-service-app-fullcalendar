@@ -90,10 +90,10 @@ export default function TaskMapModal({
     if (startLat && startLng) {
         // Start marker
         new maps.Marker({
-            position: { lat: startLat + 0.03, lng: startLng + 0.03 },
+            position: { lat: startLat, lng: startLng },
             map,
-            title: "Task Started Here",
-            icon: greenPinTarget
+            // title: "Task Started Here",
+            // icon: greenPinTarget
         });
     }
     
@@ -101,10 +101,10 @@ export default function TaskMapModal({
     if (stopLat && stopLng) {
         // Stop marker
         new maps.Marker({
-            position: { lat: stopLat + 0.02, lng: stopLng + 0.02 },
+            position: { lat: stopLat, lng: stopLng },
             map,
-            title: "Task Stopped Here",
-            icon: redTargetIcon
+            // title: "Task Stopped Here",
+            // icon: redTargetIcon
         });
     }
 
