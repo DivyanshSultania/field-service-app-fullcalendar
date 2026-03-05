@@ -912,7 +912,7 @@ export default function CalendarView({
   // Handlers
   // --- CALENDAR HANDLERS ---
   function handleEventClick(clickInfo) {
-    // debugger;
+    debugger;
     const ev = clickInfo.event;
     const ext = ev.extendedProps || {};
     debugger;
@@ -960,8 +960,10 @@ export default function CalendarView({
       task_client_instruction: '',
       task_client_information: '',
       task_client_property_information: '',
-
-
+      end_lng: '',
+      start_lat: '',
+      start_lng: '',
+      end_lat: '',
     });
     // setSelectedTeam({});
     // setSelectedLocation({});
@@ -2457,7 +2459,7 @@ export default function CalendarView({
                       <button
                         className="btn"
                         style={{ marginTop: 10 }}
-                        onClick={() => setMapModalOpen(true)}
+                        onClick={() => {debugger; setMapModalOpen(true);}}
                       >
                         View Map
                       </button>
@@ -2724,12 +2726,12 @@ export default function CalendarView({
               locations.find(l => l.id === currentTask.location_id)
             }
             startLocation={{
-              lat: currentTask.started_lat,
-              lng: currentTask.started_lng
+              lat: currentTask.start_lat,
+              lng: currentTask.start_lng
             }}
             stopLocation={{
-              lat: currentTask.stopped_lat,
-              lng: currentTask.stopped_lng
+              lat: currentTask.end_lat,
+              lng: currentTask.end_lng
             }}
             radiusMeters={
               locations.find(l => l.id === currentTask.location_id)?.radius_meters
