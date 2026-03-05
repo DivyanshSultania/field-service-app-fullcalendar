@@ -28,65 +28,140 @@ export default function TaskMapModal({
 
       const map = new maps.Map(mapRef.current, {
         center,
-        zoom: 15
+        zoom: 8
       });
 
       mapInstanceRef.current = map;
 
-      // 🔵 Assigned Location Marker
-      new maps.Marker({
-        position: center,
-        map,
-        title: "Assigned Location",
-        icon: {
-          path: maps.SymbolPath.CIRCLE,
-          scale: 10,
-          fillColor: "#2563eb",
-          fillOpacity: 1,
-          strokeWeight: 2,
-          strokeColor: "#ffffff"
-        }
-      });
+      window.homemaidMap  = map;
 
-      // 🟢 Start Location Marker
-      if (startLocation?.lat && startLocation?.lng) {
-        new maps.Marker({
-          position: {
-            lat: Number(startLocation.lat),
-            lng: Number(startLocation.lng)
-          },
-          map,
-          title: "Task Started Here",
-          icon: {
-            path: maps.SymbolPath.CIRCLE,
-            scale: 8,
-            fillColor: "#16a34a",
-            fillOpacity: 1,
-            strokeWeight: 2,
-            strokeColor: "#ffffff"
-          }
-        });
-      }
+    const isSameLocation =
+        startLocation?.lat === stopLocation?.lat &&
+        startLocation?.lng === stopLocation?.lng;
 
-      // 🔴 Stop Location Marker
-      if (stopLocation?.lat && stopLocation?.lng) {
+    const offset = 0.00005; // small shift (~5m)
+
+    const startLat = Number(startLocation?.lat);
+    const startLng = Number(startLocation?.lng);
+
+    const stopLat = isSameLocation
+        ? startLat + offset
+        : Number(stopLocation?.lat);
+
+    const stopLng = isSameLocation
+        ? startLng + offset
+        : Number(stopLocation?.lng);
+
+
+    const greenPinTarget = {
+        url:
+            "data:image/svg+xml;charset=UTF-8," +
+            encodeURIComponent(`
+            <svg width="40" height="48" viewBox="0 0 24 32">
+                <path d="M12 0C6 0 2 5 2 10c0 7 10 22 10 22s10-15 10-22c0-5-4-10-10-10z"
+                    fill="#16a34a"/>
+                <circle cx="12" cy="10" r="6" fill="white"/>
+                <circle cx="12" cy="10" r="3" fill="#16a34a"/>
+            </svg>
+            `),
+        scaledSize: new maps.Size(40, 48),
+        anchor: new maps.Point(20, 48)
+    };
+
+    const redTargetIcon = {
+        url:
+          "data:image/svg+xml;charset=UTF-8," +
+          encodeURIComponent(`
+            <svg width="42" height="42" viewBox="0 0 24 24">
+              <!-- outer ring -->
+              <circle cx="12" cy="12" r="10" fill="#dc2626"/>
+              <!-- middle ring -->
+              <circle cx="12" cy="12" r="6" fill="white"/>
+              <!-- center -->
+              <circle cx="12" cy="12" r="3" fill="#dc2626"/>
+            </svg>
+          `),
+        scaledSize: new maps.Size(42, 42),
+        anchor: new maps.Point(21, 21)
+    };
+
+    debugger;
+
+    if (startLat && startLng) {
+        // Start marker
         new maps.Marker({
-          position: {
-            lat: Number(stopLocation.lat),
-            lng: Number(stopLocation.lng)
-          },
-          map,
-          title: "Task Stopped Here",
-          icon: {
-            path: maps.SymbolPath.CIRCLE,
-            scale: 8,
-            fillColor: "#dc2626",
-            fillOpacity: 1,
-            strokeWeight: 2,
-            strokeColor: "#ffffff"
-          }
+            position: { lat: startLat + 0.03, lng: startLng + 0.03 },
+            map,
+            title: "Task Started Here",
+            icon: greenPinTarget
         });
-      }
+    }
+    
+
+    if (stopLat && stopLng) {
+        // Stop marker
+        new maps.Marker({
+            position: { lat: stopLat + 0.02, lng: stopLng + 0.02 },
+            map,
+            title: "Task Stopped Here",
+            icon: redTargetIcon
+        });
+    }
+
+    //   // 🔵 Assigned Location Marker
+    //   new maps.Marker({
+    //     position: center,
+    //     map,
+    //     title: "Assigned Location",
+    //     icon: {
+    //       path: maps.SymbolPath.CIRCLE,
+    //       scale: 8,
+    //       fillColor: "#2563eb",
+    //       fillOpacity: 1,
+    //       strokeWeight: 2,
+    //       strokeColor: "#ffffff"
+    //     }
+    //   });
+
+    //   // 🟢 Start Location Marker
+    //   if (startLocation?.lat && startLocation?.lng) {
+    //     new maps.Marker({
+    //       position: {
+    //         lat: Number(startLocation.lat),
+    //         lng: Number(startLocation.lng)
+    //       },
+    //       map,
+    //       title: "Task Started Here",
+    //       icon: {
+    //         path: maps.SymbolPath.Marker,
+    //         scale: 8,
+    //         fillColor: "#16a34a",
+    //         fillOpacity: 1,
+    //         strokeWeight: 2,
+    //         strokeColor: "#ffffff"
+    //       }
+    //     });
+    //   }
+
+    //   // 🔴 Stop Location Marker
+    //   if (stopLocation?.lat && stopLocation?.lng) {
+    //     new maps.Marker({
+    //       position: {
+    //         lat: Number(stopLocation.lat),
+    //         lng: Number(stopLocation.lng)
+    //       },
+    //       map,
+    //       title: "Task Stopped Here",
+    //       icon: {
+    //         path: maps.SymbolPath.Marker,
+    //         scale: 8,
+    //         fillColor: "#dc2626",
+    //         fillOpacity: 1,
+    //         strokeWeight: 2,
+    //         strokeColor: "#ffffff"
+    //       }
+    //     });
+    //   }
 
       // 🔵 Allowed Radius Circle
       if (radiusMeters) {
