@@ -381,9 +381,36 @@ export default function CalendarView({
         borderColor = '#dc2626';
       }
 
+      debugger;
+      let taskTitle = '';
+      if (t.task_name) {
+        taskTitle += t.task_name;
+        taskTitle += '\n';
+      }
+
+      if (t.client_name) {
+        taskTitle += t.client_name;
+        taskTitle += '\n';
+      }
+
+      if (t.staff_name) {
+        taskTitle += t.staff_name;
+        taskTitle += ' (S)\n';
+      }
+
+      if (t.task_team_members_name?.length > 0) {
+        t.task_team_members_name.forEach((staffName) => {
+          taskTitle += staffName;
+          taskTitle += ', ';
+        });
+
+        taskTitle = taskTitle.slice(0, -2);
+      }
+
       return {
         id: t.id,
-        title: t.task_name + (t.staff_name ? '\n' + t.staff_name : ''),
+        // title: t.task_name + (t.staff_name ? '\n' + t.staff_name : ''),
+        title: taskTitle,
         start: t.start_time,
         end: t.end_time,
         backgroundColor: bgColor,
@@ -1014,8 +1041,14 @@ export default function CalendarView({
 
       let taskTitle = '';
 
+      debugger;
       if (fullTask.task_name) {
         taskTitle += fullTask.task_name;
+        taskTitle += '\n';
+      }
+
+      if (fullTask.client_name) {
+        taskTitle += fullTask.client_name;
         taskTitle += '\n';
       }
 
@@ -3065,6 +3098,53 @@ export default function CalendarView({
 
             /* Smaller task font */
             eventClassNames={() => 'custom-event-small'}
+
+            // eventDidMount={(info) => {
+            //   const task = info.event.extendedProps;
+          
+            //   info.el.title = `
+            //     Task: ${task.task_name || ''}
+            //     Client: ${task.client_name || ''}
+            //     Staff: ${task.staff_name || ''}
+            //   `;
+            // }}
+
+            eventDidMount={(info) => {
+              const t = info.event.extendedProps;
+            
+              const staffList = [
+                t.staff_name ? `${t.staff_name} (S)` : null,
+                ...(t.task_team_members_name || [])
+              ].filter(Boolean).join(' ');
+            
+              const tooltip = document.createElement("div");
+              tooltip.className = "task-tooltip";
+            
+              tooltip.innerHTML = `
+                <div class="tt-title">${t.client_name || ""}</div>
+                <div><strong>Staff:</strong> ${staffList}</div>
+                <div><strong>Length:</strong> ${
+                  info.event.start && info.event.end
+                    ? dayjs(info.event.end).diff(dayjs(info.event.start), "minute") / 60 + ":00:00"
+                    : ""
+                }</div>
+                <div><strong>Location:</strong> ${t.address || ""}</div>
+                <div><strong>Mobile:</strong> ${t.client_phone || ""}</div>
+                <div><strong>Client Instruction:</strong> ${t.task_client_instruction || ""}</div>
+              `;
+            
+              info.el.addEventListener("mouseenter", () => {
+                document.body.appendChild(tooltip);
+                const rect = info.el.getBoundingClientRect();
+            
+                tooltip.style.top = rect.top + window.scrollY + "px";
+                tooltip.style.left = rect.right + 10 + "px";
+              });
+            
+              info.el.addEventListener("mouseleave", () => {
+                tooltip.remove();
+              });
+            }}
             
             height={600} />
         </div>
