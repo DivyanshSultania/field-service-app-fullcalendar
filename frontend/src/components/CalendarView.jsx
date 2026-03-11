@@ -2912,7 +2912,6 @@ export default function CalendarView({
     )
   }
 
-
   // --- MAIN RENDER ---
   return (
     <>
@@ -3029,7 +3028,7 @@ export default function CalendarView({
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
             initialView='timeGridWeek'
             headerToolbar={{
-              left: 'prev,next today createTask details',
+              left: 'prev,next today createTask details publishTasks',
               center: 'title',
               right: 'dayGridMonth,timeGridWeek,timeGridDay'
             }}
@@ -3048,6 +3047,56 @@ export default function CalendarView({
                 text: 'Details',
                 click: () => {
                   openDetailsModal();
+                }
+              },
+              publishTasks: {
+                text: 'Publish',
+                click: async () => {
+                  try {
+                    setManageLoading(true);
+
+                    const range = getActiveRange();
+                    const scopedTasks = tasks
+                      .filter(taskMatchesCurrentFilter)
+                      .filter(t => isTaskInActiveRange(t, range))
+                      .filter(t => !isTaskHiddenByWeekHiddenDays(t));
+
+                    const taskIds = scopedTasks
+                      .filter(t => !t.publish)
+                      .map(t => t.id)
+                      .filter(Boolean);
+
+                    if (taskIds.length === 0) {
+                      showToast('No unpublished tasks in the current view to publish.', '#0f172a');
+                      return;
+                    }
+
+                    const res = await authFetch(`${VITE_KEY}/api/tasks/publish`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ taskIds })
+                    });
+
+                    if (!res.ok) {
+                      const err = await res.json().catch(() => ({}));
+                      throw new Error(err?.error || 'Failed to publish tasks');
+                    }
+
+                    const data = await res.json().catch(() => ({}));
+                    const updatedCount = typeof data?.updated === 'number' ? data.updated : taskIds.length;
+                    showToast(`Published ${updatedCount} task(s).`, '#16a34a');
+
+                    // Reload tasks so calendar reflects new publish state
+                    authFetch(`${VITE_KEY}/api/tasks`)
+                      .then(r => r.json())
+                      .then(setTasks)
+                      .catch(() => {});
+                  } catch (e) {
+                    console.error(e);
+                    showToast(e.message || 'Failed to publish tasks');
+                  } finally {
+                    setManageLoading(false);
+                  }
                 }
               }
             }}
