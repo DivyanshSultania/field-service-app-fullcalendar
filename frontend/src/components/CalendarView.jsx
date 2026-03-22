@@ -6,7 +6,7 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import dayjs from 'dayjs';
 import Modal from './Modal';
 import RecurringShiftSettings from './RecurringShiftSettings'
-import TaskMapModal from './TaskMapModal';
+import TaskMapInline from './TaskMapInline';
 import { GOOGLE_MAPS_API_KEY, loadGoogleMapsApi } from '../utils/googleMaps';
 import {authFetch} from './../pages/utils';
 
@@ -67,7 +67,9 @@ export default function CalendarView({
 
   // Global Calendar State
   const calendarRef = useRef(null);
+  const calendarContainerRef = useRef(null);
   const [manageLoading, setManageLoading] = useState(false);
+  const [calendarHeight, setCalendarHeight] = useState(600);
   const [currentView, setCurrentView] = useState('timeGridWeek');
   const [currentRange, setCurrentRange] = useState({ start: null, end: null });
   const [dayDropdownOpen, setDayDropdownOpen] = useState(false);
@@ -82,11 +84,13 @@ export default function CalendarView({
   const [teamMembers, setTeamMembers] = useState([]);
   const [events, setEvents] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const taskFetchRequestIdRef = useRef(0);
 
   // Temp States
   const [currentTask, setCurrentTask] = useState({});
   const [manageCleaners, setManageCleaners] = useState([]);
-  const [mapModalOpen, setMapModalOpen] = useState(false);
+  const [showInlineTaskMap, setShowInlineTaskMap] = useState(false);
 
   // Manage Staff Modal States
   const [manageStaffModalSupervisor, setManageStaffModalSupervisor] = useState(null);
@@ -144,6 +148,7 @@ export default function CalendarView({
   const markerRef = useRef(null);
   const circleRef = useRef(null);
   const [locationLoadingDelete, setLocationLoadingDelete] = useState({});
+  const lastFetchedMonthKeyRef = useRef(null);
 
   const VITE_KEY = import.meta.env.VITE_API_URL;
   const R2_PUBLIC_URL = 'https://pub-ac8edfc52ef04beba837f1804a4abf42.r2.dev';
@@ -162,6 +167,44 @@ export default function CalendarView({
 
   console.log('-------VITE_KEY-------', VITE_KEY);
 
+  function getMonthRangeFromDate(dateLike) {
+    const base = dateLike ? dayjs(dateLike) : dayjs();
+    const monthStart = base.startOf('month');
+    const monthEndExclusive = monthStart.add(1, 'month');
+    return {
+      from: monthStart.format('YYYY-MM-DD'),
+      to: monthEndExclusive.format('YYYY-MM-DD')
+    };
+  }
+
+  async function fetchTasksForMonth(dateLike) {
+    const { from, to } = getMonthRangeFromDate(dateLike);
+    const requestId = ++taskFetchRequestIdRef.current;
+    setTasksLoading(true);
+    try {
+      const res = await authFetch(`${VITE_KEY}/api/tasks?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      const taskResp = await res.json();
+      if (taskFetchRequestIdRef.current === requestId) {
+        setTasks(Array.isArray(taskResp) ? taskResp : []);
+      }
+    } catch (err) {
+      if (taskFetchRequestIdRef.current === requestId) {
+        setTasks([]);
+      }
+      console.error('Failed to fetch tasks for month', err);
+    } finally {
+      if (taskFetchRequestIdRef.current === requestId) {
+        setTasksLoading(false);
+      }
+    }
+  }
+
+  function refreshTasksForCurrentMonth() {
+    const anchorDate = currentRange?.start || new Date();
+    lastFetchedMonthKeyRef.current = null;
+    return fetchTasksForMonth(anchorDate);
+  }
+
   // Fetch teams, staff, clients, locations
   useEffect(() => {
     authFetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams).catch(() => {});
@@ -169,16 +212,30 @@ export default function CalendarView({
     authFetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
     authFetch(`${VITE_KEY}/api/locations`).then(r => r.json()).then(setLocations).catch(() => {});
     authFetch(`${VITE_KEY}/api/team_members`).then(r => r.json()).then(setTeamMembers).catch(() => {});
-    authFetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
+    // fetchTasksForMonth(new Date());
 
-    const listener = () => {
-      // Reload tasks using your existing function
-      authFetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
-    };
+    // const listener = () => {
+    //   refreshTasksForCurrentMonth();
+    // };
   
-    window.addEventListener("refreshCalendar", listener);
-    return () => window.removeEventListener("refreshCalendar", listener);
+    // window.addEventListener("refreshCalendar", listener);
+    // return () => window.removeEventListener("refreshCalendar", listener);
   }, []);
+
+  useEffect(() => {
+    const updateCalendarHeight = () => {
+      const container = calendarContainerRef.current;
+      if (!container) return;
+      const { top } = container.getBoundingClientRect();
+      const availableHeight = Math.max(420, Math.floor(window.innerHeight - top - 16));
+      setCalendarHeight(prev => (prev === availableHeight ? prev : availableHeight));
+    };
+
+    updateCalendarHeight();
+    window.addEventListener('resize', updateCalendarHeight);
+    return () => window.removeEventListener('resize', updateCalendarHeight);
+  }, []);
+
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (dayDropdownRef.current && !dayDropdownRef.current.contains(e.target)) {
@@ -273,6 +330,12 @@ export default function CalendarView({
       const durMin = Math.round(leg.duration.value / 60);
   
       setTravelInfo({ distance_km: distKm, duration_min: durMin, from_location: prev.location_id });
+      setCurrentTask((prevTask) => ({
+        ...prevTask,
+        travel_from: prev.location_id,
+        travel_dist: distKm,
+        travel_duration: durMin
+      }));
 
       await authFetch(`${VITE_KEY}/api/tasks/${task.id}`, {
         method: 'PUT',
@@ -296,6 +359,17 @@ export default function CalendarView({
     // Perceived luminance
     const luminance = (0.299 * r + 0.587 * g + 0.114 * b);
     return luminance < 140;
+  };
+
+  const withAlpha = (hex, alpha = 1) => {
+    if (!hex) return `rgba(0, 0, 0, ${alpha})`;
+    const c = hex.replace('#', '');
+    const normalized = c.length === 3 ? c.split('').map(ch => ch + ch).join('') : c;
+    const rgb = parseInt(normalized, 16);
+    const r = (rgb >> 16) & 255;
+    const g = (rgb >> 8) & 255;
+    const b = rgb & 255;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   };
 
   function taskMatchesCurrentFilter(t) {
@@ -355,33 +429,23 @@ export default function CalendarView({
       const supervisor = staffs.find(s => s.id === t.staff_id);
       const bgColor = supervisor?.color || '#7c3aed';
 
-      // Determine border color based on task status
-      let borderColor = 'transparent';
-      const now = dayjs();
+      // Determine accent border color based on task status
+      let borderColor = '#60a5fa'; // not published: light blue
+      const isInProgress = t.started_at && !t.stopped_at;
+      const isFinished = t.started_at && t.stopped_at;
 
-      if (t.started_at && t.stopped_at) {
-        // Completed
-        borderColor = '#16a34a'; // green
-      } else if (dayjs(t.end_time).isBefore(now)) {
-        // Past but not done
-        borderColor = '#dc2626'; // red
+      if (isFinished) {
+        borderColor = '#16a34a'; // finished: green
+      } else if (isInProgress) {
+        borderColor = '#f59e0b'; // in progress: orange
       } else if (t.publish) {
-        // Published
-        borderColor = '#06b6d4'; // cyan
-      }  else if (!t.publish) {
-        // Not Published
-        borderColor = '#FFFF00'; // yellow
-      } else if (t.started_at && !t.stopped_at) {
-        // In progress
-        borderColor = '#f59e0b'; // amber/orange
+        borderColor = '#7c3aed'; // published: purple
       }
 
       // Tasks assigned to cover should always be red
-      if (t.assignment_type === 'cover') {
+      if (t.assignment_type === 'cover' || t.staff_id === 'STATIC-COVER-STAFF') {
         borderColor = '#dc2626';
       }
-
-      debugger;
       let taskTitle = '';
       if (t.task_name) {
         taskTitle += t.task_name;
@@ -414,14 +478,10 @@ export default function CalendarView({
         start: t.start_time,
         end: t.end_time,
         backgroundColor: bgColor,
-        borderColor: borderColor,
-        borderWidth: borderColor === 'transparent' ? 0 : 4,
-        boxShadow:
-          borderColor === 'transparent'
-            ? 'none'
-            : `1px 1px 1px 10px ${borderColor}`,
+        borderColor,
+        borderWidth: 3,
         textColor: isDarkColor(bgColor) ? '#ffffff' : '#111827',
-        extendedProps: { ...t }
+        extendedProps: { ...t, statusBorderColor: borderColor }
       };
     });
     setEvents(ev);
@@ -1622,6 +1682,7 @@ export default function CalendarView({
 
     setTaskModalMainTab('Shift Detail');
     setTaskModalEditTab('Shift');
+    setShowInlineTaskMap(false);
 
     
     setEditInstructionInput('');
@@ -1678,14 +1739,10 @@ export default function CalendarView({
 
   function closeEditTaskModal() {
     setEditModalOpen(false);
-    authFetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(taskResp => {
-      setTasks(taskResp);
-
-      updateCalendarView();
-    }).catch((err) => {
-      console.error('Error Occurred in closeEditTaskModal', err);
-      showToast(typeof arguments[1] === 'string' ? arguments[1] : (arguments[0]?.message || 'Error occurred'));
-    });
+    // refreshTasksForCurrentMonth().catch((err) => {
+    //   console.error('Error Occurred in closeEditTaskModal', err);
+    //   showToast(typeof arguments[1] === 'string' ? arguments[1] : (arguments[0]?.message || 'Error occurred'));
+    // });
   }
 
   function EditTaskModal() {    
@@ -1714,11 +1771,7 @@ export default function CalendarView({
         computeAndSaveTravelDistance(currentTask);
         setEditModalOpen(false);
 
-        authFetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(taskResp => {
-          setTasks(taskResp);
-    
-          updateCalendarView();
-        }).catch((err) => {
+        refreshTasksForCurrentMonth().catch((err) => {
           console.error('Error Occurred in closeEditTaskModal', err);
           showToast(typeof arguments[1] === 'string' ? arguments[1] : (arguments[0]?.message || 'Error occurred'));
         });
@@ -1824,10 +1877,10 @@ export default function CalendarView({
       }
     }
 
-    const refreshCalendar = () => {
-      // Trigger a global event to reload tasks everywhere
-      window.dispatchEvent(new CustomEvent("refreshCalendar"));
-    };
+    // const refreshCalendar = () => {
+    //   // Trigger a global event to reload tasks everywhere
+    //   window.dispatchEvent(new CustomEvent("refreshCalendar"));
+    // };
 
     // Instructions Handlers Ends
 
@@ -1847,9 +1900,34 @@ export default function CalendarView({
       }
     }, [editModalOpen, currentTask && currentTask.id]);
 
+    const getDateValue = (value) => (value ? dayjs(value).format('YYYY-MM-DD') : '');
+    const getTimeValue = (value) => (value ? dayjs(value).format('HH:mm') : '');
+    const buildIso = (dateText, timeText) => {
+      if (!dateText || !timeText) return null;
+      return dayjs(`${dateText}T${timeText}`).toISOString();
+    };
+    const scheduledMinutes = (currentTask.start_time && currentTask.end_time)
+      ? Math.max(0, dayjs(currentTask.end_time).diff(dayjs(currentTask.start_time), 'minute'))
+      : 0;
+    const loggedMinutes = (currentTask.started_at && currentTask.stopped_at)
+      ? Math.max(0, dayjs(currentTask.stopped_at).diff(dayjs(currentTask.started_at), 'minute'))
+      : (currentTask.started_at ? Math.floor(shiftTimerSeconds / 60) : 0);
+    const payMinutes = Math.min(scheduledMinutes, loggedMinutes);
+    const formatMinutesAsHHMMSS = (mins) => {
+      const safeMinutes = Math.max(0, Number(mins) || 0);
+      const hours = Math.floor(safeMinutes / 60);
+      const minutes = safeMinutes % 60;
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+    };
+
     return (
-      <Modal open={editModalOpen} title="Edit Shift" onClose={closeEditTaskModal}>
-        <div style={{minWidth:720, display:'flex', flexDirection:'column', gap:10}}>
+      <Modal
+        open={editModalOpen}
+        title="Edit Shift"
+        onClose={closeEditTaskModal}
+        modalStyle={{ width: '80vw', maxWidth: '80vw' }}
+      >
+        <div style={{display:'flex', flexDirection:'column', gap:10}}>
           {/* Top Tabs */}
           <div style={{
             display:'flex',
@@ -2337,7 +2415,7 @@ export default function CalendarView({
                     <div style={{background:'#f8fafc', padding:10, border:'1px solid #eef2ff', borderRadius:6, color:'#6b7280'}}>Note: Any change in this section will only affect the selected shift. Try Repeat for group change.</div>
 
                     {/* Scheduled Date & Time (editable) */}
-                    <div style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, background:'#fff', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                    {/* <div style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, background:'#fff', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
                       <div>
                         <div style={{fontWeight:600, marginBottom:6}}>Date & Time</div>
                         {!reportEditMode ? (
@@ -2402,6 +2480,139 @@ export default function CalendarView({
                           <button className="btn" onClick={()=>setReportEditMode(true)}>✏️ Edit</button>
                         </div>
                       )}
+                    </div> */}
+
+                    
+                    
+
+                    {/* Time Tracking Section */}
+                    <div style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, background:'#fff'}}>
+                      <div style={{fontWeight:600, marginBottom:12}}>Time Tracking</div>
+                      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:18}}>
+                        <div>
+                          <div style={{fontWeight:600, marginBottom:10}}>Scheduled</div>
+                          <div style={{display:'grid', gridTemplateColumns:'70px 1fr 1fr', gap:10, alignItems:'center', marginBottom:10}}>
+                            <label style={{display:'flex', alignItems:'center', gap:8}}>
+                              <input type="radio" checked readOnly />
+                              In
+                            </label>
+                            <input
+                              type="date"
+                              value={getDateValue(currentTask.start_time)}
+                              onChange={(e) => {
+                                const nextDate = e.target.value;
+                                const nextTime = getTimeValue(currentTask.start_time) || '09:00';
+                                const nextIso = buildIso(nextDate, nextTime);
+                                if (nextIso) handleShiftUpdate({ start_time: nextIso });
+                              }}
+                            />
+                            <input
+                              type="time"
+                              value={getTimeValue(currentTask.start_time)}
+                              onChange={(e) => {
+                                const nextDate = getDateValue(currentTask.start_time) || dayjs().format('YYYY-MM-DD');
+                                const nextIso = buildIso(nextDate, e.target.value);
+                                if (nextIso) handleShiftUpdate({ start_time: nextIso });
+                              }}
+                            />
+                          </div>
+                          <div style={{display:'grid', gridTemplateColumns:'70px 1fr 1fr', gap:10, alignItems:'center'}}>
+                            <label style={{display:'flex', alignItems:'center', gap:8}}>
+                              <input type="radio" checked readOnly />
+                              Out
+                            </label>
+                            <input
+                              type="date"
+                              value={getDateValue(currentTask.end_time)}
+                              onChange={(e) => {
+                                const nextDate = e.target.value;
+                                const nextTime = getTimeValue(currentTask.end_time) || '10:00';
+                                const nextIso = buildIso(nextDate, nextTime);
+                                if (nextIso) handleShiftUpdate({ end_time: nextIso });
+                              }}
+                            />
+                            <input
+                              type="time"
+                              value={getTimeValue(currentTask.end_time)}
+                              onChange={(e) => {
+                                const nextDate = getDateValue(currentTask.end_time) || getDateValue(currentTask.start_time) || dayjs().format('YYYY-MM-DD');
+                                const nextIso = buildIso(nextDate, e.target.value);
+                                if (nextIso) handleShiftUpdate({ end_time: nextIso });
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{fontWeight:600, marginBottom:10}}>Logged</div>
+                          <div style={{display:'grid', gridTemplateColumns:'70px 1fr 1fr', gap:10, alignItems:'center', marginBottom:10}}>
+                            <label style={{display:'flex', alignItems:'center', gap:8}}>
+                              <input type="radio" checked readOnly />
+                              In
+                            </label>
+                            <input
+                              type="date"
+                              value={getDateValue(currentTask.started_at)}
+                              onChange={(e) => {
+                                const nextDate = e.target.value;
+                                const nextTime = getTimeValue(currentTask.started_at) || '09:00';
+                                const nextIso = buildIso(nextDate, nextTime);
+                                if (nextIso) handleShiftUpdate({ started_at: nextIso });
+                              }}
+                            />
+                            <input
+                              type="time"
+                              value={getTimeValue(currentTask.started_at)}
+                              onChange={(e) => {
+                                const nextDate = getDateValue(currentTask.started_at) || getDateValue(currentTask.start_time) || dayjs().format('YYYY-MM-DD');
+                                const nextIso = buildIso(nextDate, e.target.value);
+                                if (nextIso) handleShiftUpdate({ started_at: nextIso });
+                              }}
+                            />
+                          </div>
+                          <div style={{display:'grid', gridTemplateColumns:'70px 1fr 1fr', gap:10, alignItems:'center'}}>
+                            <label style={{display:'flex', alignItems:'center', gap:8}}>
+                              <input type="radio" checked readOnly />
+                              Out
+                            </label>
+                            <input
+                              type="date"
+                              value={getDateValue(currentTask.stopped_at)}
+                              onChange={(e) => {
+                                const nextDate = e.target.value;
+                                const nextTime = getTimeValue(currentTask.stopped_at) || '10:00';
+                                const nextIso = buildIso(nextDate, nextTime);
+                                if (nextIso) handleShiftUpdate({ stopped_at: nextIso });
+                              }}
+                            />
+                            <input
+                              type="time"
+                              value={getTimeValue(currentTask.stopped_at)}
+                              onChange={(e) => {
+                                const nextDate = getDateValue(currentTask.stopped_at) || getDateValue(currentTask.started_at) || getDateValue(currentTask.start_time) || dayjs().format('YYYY-MM-DD');
+                                const nextIso = buildIso(nextDate, e.target.value);
+                                if (nextIso) handleShiftUpdate({ stopped_at: nextIso });
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr auto', gap:12, marginTop:14, alignItems:'end'}}>
+                        <div>
+                          <div style={{fontSize:12,color:'#6b7280'}}>Log Length</div>
+                          <input value={formatMinutesAsHHMMSS(loggedMinutes)} readOnly />
+                        </div>
+                        <div>
+                          <div style={{fontSize:12,color:'#6b7280'}}>Sch Length</div>
+                          <input value={formatMinutesAsHHMMSS(scheduledMinutes)} readOnly />
+                        </div>
+                        <div>
+                          <div style={{fontSize:12,color:'#6b7280'}}>Pay Length</div>
+                          <input value={formatMinutesAsHHMMSS(payMinutes)} readOnly />
+                        </div>
+                        <button className="btn primary" onClick={handleSaveShiftModal}>Update</button>
+                      </div>
                     </div>
 
                     {/* Start Shift Section */}
@@ -2465,34 +2676,12 @@ export default function CalendarView({
                         </div>
                       ) : null}
                     </div>
-                    
 
-                    {/* Time Tracking Section */}
-                    <div style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, background:'#fff'}}>
-                      <div style={{fontWeight:600, marginBottom:8}}>Time Tracking</div>
-                      <div style={{display:'flex', gap:24}}>
-                        <div style={{flex:1}}>
-                          <div style={{fontSize:12,color:'#6b7280'}}>Scheduled</div>
-                          <div>In: {currentTask.start_time ? dayjs(currentTask.start_time).format('D MMM YYYY, HH:mm') : '-'}</div>
-                          <div>Out: {currentTask.end_time ? dayjs(currentTask.end_time).format('D MMM YYYY, HH:mm') : '-'}</div>
-                          <div style={{marginTop:8}}>Sch Length: <strong>{currentTask.start_time && currentTask.end_time ? dayjs(currentTask.end_time).diff(dayjs(currentTask.start_time), 'hour', true).toFixed(2) : '0:00'}</strong></div>
-                        </div>
-                        <div style={{flex:1}}>
-                          <div style={{fontSize:12,color:'#6b7280'}}>Logged</div>
-                          <div>In: {currentTask.started_at ? dayjs(currentTask.started_at).format('D MMM YYYY, HH:mm') : 'N/A'}</div>
-                          <div>Out: {currentTask.stopped_at ? dayjs(currentTask.stopped_at).format('D MMM YYYY, HH:mm') : 'N/A'}</div>
-                          <div style={{marginTop:8}}>Log Length: <strong>{currentTask.started_at && currentTask.stopped_at ? dayjs(currentTask.stopped_at).diff(dayjs(currentTask.started_at), 'minute') + ' min' : (currentTask.started_at ? `${Math.floor(shiftTimerSeconds/60)} min` : '0 min')}</strong></div>
-                          {/* <div>Pause Time: <strong>0:00</strong></div>
-                          <div>Pay Length: <strong>0:00</strong></div> */}
-                        </div>
-                      </div>
-                    </div>
-
-                    {currentTask.location_id && (
+                    {currentTask.location_id && !showInlineTaskMap && (
                       <button
                         className="btn"
                         style={{ marginTop: 10 }}
-                        onClick={() => {debugger; setMapModalOpen(true);}}
+                        onClick={() => setShowInlineTaskMap(true)}
                       >
                         View Map
                       </button>
@@ -2565,12 +2754,74 @@ export default function CalendarView({
                         </div>
                       </div>
 
-                      <div style={{display:'flex', gap:12, marginTop:10}}>
+                      <div style={{display:'flex', gap:12, marginTop:10, alignItems:'end'}}>
                         <div style={{flex:1}}>From Location: {travelInfo.from_location ? (locations.find(l=>l.id===travelInfo.from_location)?.title || travelInfo.from_location) : (currentTask.travel_from ? (locations.find(l=>l.id===currentTask.travel_from)?.title || currentTask.travel_from) : 'No previous shift found on the same day')}</div>
-                        <div style={{width:160}}>Distance (km): {travelInfo.distance_km ?? (currentTask.travel_dist ?? '0')}</div>
-                        <div style={{width:160}}>Duration (min): {travelInfo.duration_min ?? (currentTask.travel_duration ?? '0')}</div>
+                        <div style={{width:180}}>
+                          <div style={{fontSize:12,color:'#6b7280'}}>Distance (km)</div>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={currentTask.travel_dist ?? ''}
+                            onChange={(e)=>handleShiftUpdate({ travel_dist: e.target.value })}
+                          />
+                        </div>
+                        <div style={{width:180}}>
+                          <div style={{fontSize:12,color:'#6b7280'}}>Duration (min)</div>
+                          <input
+                            type="number"
+                            step="1"
+                            min="0"
+                            value={currentTask.travel_duration ?? ''}
+                            onChange={(e)=>handleShiftUpdate({ travel_duration: e.target.value })}
+                          />
+                        </div>
+                        <button
+                          className="btn primary"
+                          disabled={manageLoading}
+                          onClick={async ()=>{
+                            try {
+                              setManageLoading(true);
+                              const payload = {
+                                ...currentTask,
+                                travel_dist: currentTask.travel_dist === '' ? null : Number(currentTask.travel_dist),
+                                travel_duration: currentTask.travel_duration === '' ? null : Number(currentTask.travel_duration)
+                              };
+                              const res = await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload)
+                              });
+                              const updated = await res.json();
+                              setCurrentTask(updated);
+                              showToast('Travel details updated', '#16a34a');
+                            } catch (e) {
+                              console.error('travel update error', e);
+                              showToast('Failed to update travel details');
+                            } finally {
+                              setManageLoading(false);
+                            }
+                          }}
+                        >
+                          Save Travel
+                        </button>
                       </div>
                     </div>
+
+                    {showInlineTaskMap && currentTask.location_id && (
+                      <div style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, background:'#fff'}}>
+                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+                          <div style={{fontWeight:600}}>Map View</div>
+                          <button className="btn" onClick={() => setShowInlineTaskMap(false)}>Hide Map</button>
+                        </div>
+                        <TaskMapInline
+                          assignedLocation={locations.find(l => l.id === currentTask.location_id)}
+                          startLocation={{ lat: currentTask.start_lat, lng: currentTask.start_lng }}
+                          stopLocation={{ lat: currentTask.end_lat, lng: currentTask.end_lng }}
+                          radiusMeters={locations.find(l => l.id === currentTask.location_id)?.radius_meters}
+                        />
+                      </div>
+                    )}
 
                     {/* Messages Section */}
                     <div style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, background:'#fff'}}>
@@ -2648,7 +2899,9 @@ export default function CalendarView({
 
           {taskModalMainTab === 'Repeat' && (
             <div style={{padding:'20px', textAlign:'center', color:'#6b7280'}}>
-              <RecurringShiftSettings task={currentTask} onCreated={refreshCalendar} />
+              {/* <RecurringShiftSettings task={currentTask} onCreated={refreshCalendar} /> */}
+              <RecurringShiftSettings task={currentTask} />
+
             </div>
           )}
 
@@ -2735,7 +2988,7 @@ export default function CalendarView({
 
                     showToast('Task cancelled and assigned to Cover', '#16a34a');
                     setEditModalOpen(false);
-                    refreshCalendar();
+                    // refreshCalendar();
                   } catch (e) {
                     console.error(e);
                     showToast('Failed to cancel task');
@@ -2752,24 +3005,6 @@ export default function CalendarView({
           {TeamSelectionModal()}
           {ManageStaffModal()}
           {LocationSelectionModal()}
-          <TaskMapModal
-            open={mapModalOpen}
-            onClose={() => setMapModalOpen(false)}
-            assignedLocation={
-              locations.find(l => l.id === currentTask.location_id)
-            }
-            startLocation={{
-              lat: currentTask.start_lat,
-              lng: currentTask.start_lng
-            }}
-            stopLocation={{
-              lat: currentTask.end_lat,
-              lng: currentTask.end_lng
-            }}
-            radiusMeters={
-              locations.find(l => l.id === currentTask.location_id)?.radius_meters
-            }
-          />
         </div>
       </Modal>
     );
@@ -3016,14 +3251,32 @@ export default function CalendarView({
       <div style={{ display: 'flex', flex: 1 }}>
         {/* <div style={{ flex: 1 }}> */}
         <div
+          ref={calendarContainerRef}
           style={{
-            maxHeight: '75vh',
             width: '100%',
-            overflowY: 'auto',
+            minHeight: `${calendarHeight}px`,
             border: '1px solid #e5e7eb',
-            borderRadius: 8
+            borderRadius: 8,
+            position: 'relative'
           }}
         >
+          {tasksLoading && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(255,255,255,0.72)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 20,
+                fontWeight: 600,
+                color: '#111827'
+              }}
+            >
+              Loading tasks...
+            </div>
+          )}
           <FullCalendar
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
             initialView='timeGridWeek'
@@ -3087,10 +3340,7 @@ export default function CalendarView({
                     showToast(`Published ${updatedCount} task(s).`, '#16a34a');
 
                     // Reload tasks so calendar reflects new publish state
-                    authFetch(`${VITE_KEY}/api/tasks`)
-                      .then(r => r.json())
-                      .then(setTasks)
-                      .catch(() => {});
+                    refreshTasksForCurrentMonth().catch(() => {});
                   } catch (e) {
                     console.error(e);
                     showToast(e.message || 'Failed to publish tasks');
@@ -3128,6 +3378,17 @@ export default function CalendarView({
             
                 return { start: arg.start, end: arg.end };
               });
+
+              if (newView === 'dayGridMonth') {
+                const monthKey = dayjs(arg.start).startOf('month').format('YYYY-MM');
+                const fetchKey = `${newView}:${monthKey}`;
+                if (lastFetchedMonthKeyRef.current !== fetchKey) {
+                  lastFetchedMonthKeyRef.current = fetchKey;
+                  fetchTasksForMonth(arg.start);
+                }
+              } else {
+                fetchTasksForMonth(arg.start);
+              }
             }}
             hiddenDays={currentView === 'timeGridWeek' ? (filter.hiddenDays || []) : []}
             ref={calendarRef}
@@ -3160,6 +3421,11 @@ export default function CalendarView({
 
             eventDidMount={(info) => {
               const t = info.event.extendedProps;
+              const cardColor = info.event.backgroundColor || '#7c3aed';
+              const accentColor = t.statusBorderColor || info.event.borderColor || '#7c3aed';
+              info.el.style.background = `linear-gradient(${cardColor}, ${cardColor}) padding-box, linear-gradient(135deg, ${withAlpha(accentColor, 0.5)}, ${accentColor}) border-box`;
+              info.el.style.border = '4px solid transparent';
+              info.el.style.borderRadius = '6px';
             
               const staffList = [
                 t.staff_name ? `${t.staff_name} (S)` : null,
@@ -3168,17 +3434,20 @@ export default function CalendarView({
             
               const tooltip = document.createElement("div");
               tooltip.className = "task-tooltip";
+
+              let locationAddress = locations.find(l => l.id === t.location_id)?.address || "";
+
+              const m = dayjs(info.event.end).diff(dayjs(info.event.start), "minute");
+              const length = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
             
               tooltip.innerHTML = `
                 <div class="tt-title">${t.client_name || ""}</div>
                 <div><strong>Staff:</strong> ${staffList}</div>
                 <div><strong>Length:</strong> ${
-                  info.event.start && info.event.end
-                    ? dayjs(info.event.end).diff(dayjs(info.event.start), "minute") / 60 + ":00:00"
-                    : ""
+                  length
                 }</div>
-                <div><strong>Location:</strong> ${t.address || ""}</div>
-                <div><strong>Mobile:</strong> ${t.client_phone || ""}</div>
+                <div><strong>Location:</strong> ${locationAddress || t.location_title || ""}</div>
+                <div><strong>Mobile:</strong> ${t.task_client_phone || ""}</div>
                 <div><strong>Client Instruction:</strong> ${t.task_client_instruction || ""}</div>
               `;
             
@@ -3195,7 +3464,7 @@ export default function CalendarView({
               });
             }}
             
-            height={600} />
+            height={calendarHeight} />
         </div>
         {EditTaskModal()}
         {shiftModal()}

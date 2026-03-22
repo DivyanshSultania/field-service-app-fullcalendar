@@ -77,6 +77,7 @@ export default function StaffManagement() {
   function handleSubmit(e) {
     e.preventDefault();
     if (editMode) {
+      debugger;
       authFetch(`${VITE_KEY}/api/staff/${editStaffId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -303,7 +304,7 @@ export default function StaffManagement() {
                 }}>{s.status || 'Active'}</span>
               </td>
               <td style={{ padding: '12px' }}>
-                <button className="btn">View</button>{' '}
+                {/* <button className="btn">View</button>{' '} */}
                 <button className="btn" onClick={() => handleEditStaff(s)}>Edit</button>{' '}
                 <button className="btn" style={{ color: 'red' }} onClick={() => handleDelete(s.id)}>Delete</button>
               </td>
