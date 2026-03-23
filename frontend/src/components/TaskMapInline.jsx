@@ -31,7 +31,7 @@ export default function TaskMapInline({
 
         const map = new maps.Map(mapRef.current, {
           center,
-          zoom: 6
+          zoom: 2
         });
 
         const isSameLocation =

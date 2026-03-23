@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import FullCalendar from '@fullcalendar/react';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -148,6 +148,9 @@ export default function CalendarView({
   const markerRef = useRef(null);
   const circleRef = useRef(null);
   const [locationLoadingDelete, setLocationLoadingDelete] = useState({});
+  /** When set, confirming uses this saved location row unless the user edits fields (then a new location is created). */
+  const [locationPickedExistingId, setLocationPickedExistingId] = useState(null);
+  /** YYYY-MM for which /api/tasks was last loaded successfully; same session only (cleared on full page reload). */
   const lastFetchedMonthKeyRef = useRef(null);
 
   const VITE_KEY = import.meta.env.VITE_API_URL;
@@ -177,7 +180,12 @@ export default function CalendarView({
     };
   }
 
-  async function fetchTasksForMonth(dateLike) {
+  async function fetchTasksForMonth(dateLike, { force = false } = {}) {
+    const monthKey = dayjs(dateLike ?? undefined).startOf('month').format('YYYY-MM');
+    if (!force && lastFetchedMonthKeyRef.current === monthKey) {
+      return;
+    }
+
     const { from, to } = getMonthRangeFromDate(dateLike);
     const requestId = ++taskFetchRequestIdRef.current;
     setTasksLoading(true);
@@ -186,10 +194,12 @@ export default function CalendarView({
       const taskResp = await res.json();
       if (taskFetchRequestIdRef.current === requestId) {
         setTasks(Array.isArray(taskResp) ? taskResp : []);
+        lastFetchedMonthKeyRef.current = monthKey;
       }
     } catch (err) {
       if (taskFetchRequestIdRef.current === requestId) {
         setTasks([]);
+        lastFetchedMonthKeyRef.current = null;
       }
       console.error('Failed to fetch tasks for month', err);
     } finally {
@@ -201,8 +211,7 @@ export default function CalendarView({
 
   function refreshTasksForCurrentMonth() {
     const anchorDate = currentRange?.start || new Date();
-    lastFetchedMonthKeyRef.current = null;
-    return fetchTasksForMonth(anchorDate);
+    return fetchTasksForMonth(anchorDate, { force: true });
   }
 
   // Fetch teams, staff, clients, locations
@@ -267,8 +276,8 @@ export default function CalendarView({
     return labels.join(', ');
   };
 
-  async function computeAndSaveTravelDistance(task, isBtnClick) {
-    debugger;
+  async function computeAndSaveTravelDistance(task, isBtnClick, options = {}) {
+    const { skipSave = false } = options;
     if (
       !task 
       || !task.staff_id 
@@ -281,34 +290,48 @@ export default function CalendarView({
       return;
     }
   
-    const sameDay = tasks.filter(t =>
-      ((t.staff_id === task.staff_id) || t.task_team_members.indexOf(task.staff_id) !== -1) &&
-      t.start_time &&
-      dayjs(t.start_time).isSame(dayjs(task.start_time), 'day') &&
-      t.id !== task.id
-    );
-    if (sameDay.length === 0) {
+    const taskStart = dayjs(task.start_time);
+    let prev = null;
+
+    for (const candidate of tasks) {
+      if (!candidate?.start_time || candidate.id === task.id) continue;
+      const isAssignedToStaff =
+        candidate.staff_id === task.staff_id ||
+        candidate.task_team_members?.indexOf(task.staff_id) !== -1;
+
+      if (!isAssignedToStaff) continue;
+
+      const candidateStart = dayjs(candidate.start_time);
+      if (!candidateStart.isSame(taskStart, 'day') || !candidateStart.isBefore(taskStart)) {
+        continue;
+      }
+
+      if (!prev || candidateStart.isAfter(dayjs(prev.start_time))) {
+        prev = candidate;
+      }
+    }
+
+    if (!prev) {
       if (isBtnClick) {
         alert('No previous shift found on the same day');
       }
-      return;
+      return null;
     }
   
-    const prev = sameDay.sort((a, b) => new Date(b.start_time) - new Date(a.start_time))[0];
-    if (!prev || !prev.location_id) { 
+    if (!prev.location_id) { 
       if (isBtnClick) {
         alert('No location found for previous shift'); 
       }
-      return; 
+      return null; 
     }
 
     const fromLoc = locations.find(l => l.id === prev.location_id);
     const toLoc = locations.find(l => l.id === task.location_id);
-    if (!fromLoc || !toLoc || !fromLoc.lat || !toLoc.lat) {
+    if (!fromLoc || !toLoc || !fromLoc.lat || !fromLoc.lng || !toLoc.lat || !toLoc.lng) {
       if (isBtnClick) {  
         alert('Location coordinates missing');
       }
-      return;
+      return null;
     }
   
     try {
@@ -325,26 +348,39 @@ export default function CalendarView({
         });
       });
   
-      const leg = resp.routes[0].legs[0];
-      const distKm = (leg.distance.value / 1000).toFixed(2);
-      const durMin = Math.round(leg.duration.value / 60);
+      const leg = resp.routes[0]?.legs[0];
+      if (!leg?.distance?.value || !leg?.duration?.value) {
+        return null;
+      }
+
+      const travel = {
+        from_location: prev.location_id,
+        travel_from: prev.location_id,
+        travel_dist: (leg.distance.value / 1000).toFixed(2),
+        travel_duration: Math.round(leg.duration.value / 60)
+      };
   
-      setTravelInfo({ distance_km: distKm, duration_min: durMin, from_location: prev.location_id });
+      setTravelInfo({ distance_km: travel.travel_dist, duration_min: travel.travel_duration, from_location: travel.from_location });
       setCurrentTask((prevTask) => ({
         ...prevTask,
-        travel_from: prev.location_id,
-        travel_dist: distKm,
-        travel_duration: durMin
+        travel_from: travel.travel_from,
+        travel_dist: travel.travel_dist,
+        travel_duration: travel.travel_duration
       }));
 
+      if (!skipSave) {
       await authFetch(`${VITE_KEY}/api/tasks/${task.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...task, travel_from: prev.location_id, travel_dist: distKm, travel_duration: durMin })
+          body: JSON.stringify({ ...task, travel_from: travel.travel_from, travel_dist: travel.travel_dist, travel_duration: travel.travel_duration })
       });
+      }
+
+      return travel;
     } catch (e) {
       console.error('Auto travel compute failed:', e);
       showToast(typeof arguments[1] === 'string' ? arguments[1] : (arguments[0]?.message || 'Error occurred'));
+      return null;
     }
   }
 
@@ -1026,6 +1062,7 @@ export default function CalendarView({
       start_time: (selectInfo.start)?.toISOString(),
       end_time: (selectInfo.end)?.toISOString(),
       publish: false,
+      isLocation: false,
       shift_instructions: '',
       color: '',
       created_at: '',
@@ -1084,10 +1121,18 @@ export default function CalendarView({
       color: currentTask.color,
       shift_instructions: currentTask.shift_instructions,
       publish: currentTask.publish ? 1 : 0,
+      isLocation: !!currentTask.isLocation,
       task_team_members: currentTask.task_team_members
     };
-  
+
     try {
+      const travel = await computeAndSaveTravelDistance(currentTask, false, { skipSave: true });
+      if (travel) {
+        payload.travel_from = travel.travel_from;
+        payload.travel_dist = travel.travel_dist;
+        payload.travel_duration = travel.travel_duration;
+      }
+
       const res = await authFetch(`${VITE_KEY}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1392,11 +1437,48 @@ export default function CalendarView({
     setlocationComment('');
     setLocationRadiusMeter(100);
     setLocationLoadingDelete({});
+    setLocationPickedExistingId(null);
 
     setLocationModalOpen(true);
   }
 
   function LocationSelectionModal() {
+    const existingLocationMatches = useMemo(() => {
+      const q = locationSearchText.trim().toLowerCase();
+      if (!q) return [];
+      return locations
+        .filter(l =>
+          (l.title && String(l.title).toLowerCase().includes(q)) ||
+          (l.address && String(l.address).toLowerCase().includes(q))
+        )
+        .slice(0, 12);
+    }, [locationSearchText, locations]);
+
+    function buildPlaceFromSavedLocation(loc) {
+      const lat = Number(loc.lat);
+      const lng = Number(loc.lng);
+      return {
+        name: loc.title || '',
+        formatted_address: loc.address || '',
+        geometry: {
+          location: {
+            lat: () => lat,
+            lng: () => lng
+          }
+        }
+      };
+    }
+
+    function handleSelectExistingLocation(loc) {
+      setLocationPickedExistingId(loc.id);
+      setSelectedLocationPlace(buildPlaceFromSavedLocation(loc));
+      setLocationUnitNo(loc.unit_no || '');
+      setlocationComment(loc.comment || '');
+      setLocationRadiusMeter(Number(loc.radius_meters) || 100);
+      setLocationSearchText([loc.title, loc.address].filter(Boolean).join(' — '));
+      setLocationSearchResults([]);
+    }
+
     // Load Google Maps Places API
     useEffect(() => {
       if (!locationMapLoaded) {
@@ -1454,6 +1536,8 @@ export default function CalendarView({
         return;
       }
 
+      setLocationPickedExistingId(null);
+
       if (locationMapLoaded && !mapRef.current && locationModalOpen) {
         const maps = window.google.maps;
         mapRef.current = new maps.Map(document.getElementById('location-map'), {
@@ -1484,6 +1568,7 @@ export default function CalendarView({
     function handleSelectPlace(place) {
       setSelectedLocationPlace(place);
       setLocationSearchResults([]);
+      setLocationPickedExistingId(null);
     }
 
     function handleLocationModalAdd(loc) {
@@ -1496,6 +1581,14 @@ export default function CalendarView({
     }
 
     function handleAddLocation() {
+      if (locationPickedExistingId) {
+        const existing = locations.find(l => l.id === locationPickedExistingId);
+        if (existing) {
+          handleLocationModalAdd(existing);
+          return;
+        }
+      }
+
       const loc = {
         title: selectedLocationPlace?.name || '',
         address: selectedLocationPlace?.formatted_address || '',
@@ -1566,15 +1659,47 @@ export default function CalendarView({
           <div>
             <input
               type="text"
-              placeholder="Search location"
+              placeholder="Search saved locations or find a place"
               value={locationSearchText}
-              onChange={e => setLocationSearchText(e.target.value)}
+              onChange={e => {
+                setLocationSearchText(e.target.value);
+                setLocationPickedExistingId(null);
+              }}
               style={{width:'70%'}}
             />
-            <button className="btn" onClick={handleSearch} style={{marginLeft:8}}>Search</button>
+            <button className="btn" onClick={handleSearch} style={{marginLeft:8}}>Search maps</button>
           </div>
+          {locationSearchText.trim() && existingLocationMatches.length > 0 && (
+            <div style={{marginBottom:4}}>
+              <div style={{fontSize:12, fontWeight:600, color:'#374151', marginBottom:6}}>Matching saved locations</div>
+              <div style={{maxHeight:140, overflowY:'auto', border:'1px solid #bfdbfe', borderRadius:6, background:'#f8fafc'}}>
+                {existingLocationMatches.map(loc => (
+                  <div
+                    key={loc.id}
+                    role="button"
+                    tabIndex={0}
+                    style={{padding:'8px 10px', cursor:'pointer', borderBottom:'1px solid #e5e7eb'}}
+                    onClick={() => handleSelectExistingLocation(loc)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') handleSelectExistingLocation(loc);
+                    }}
+                  >
+                    <span style={{fontSize:11, fontWeight:700, color:'#1d4ed8', marginRight:8}}>Saved</span>
+                    <span style={{fontWeight:500}}>{loc.title || '—'}</span>
+                    <span style={{fontSize:12, color:'#64748b', display:'block'}}>{loc.address || ''}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {locationPickedExistingId && (
+            <div style={{fontSize:12, color:'#0369a1', background:'#e0f2fe', padding:'8px 10px', borderRadius:6, border:'1px solid #7dd3fc'}}>
+              <strong>Saved location selected.</strong> Editing unit, comment, radius, or search text will create a <strong>new</strong> location for this task.
+            </div>
+          )}
           {locationSearchResults.length > 0 && (
             <div style={{maxHeight:120, overflowY:'auto', border:'1px solid #ddd', marginBottom:8}}>
+              <div style={{fontSize:11, color:'#6b7280', padding:'4px 6px'}}>Map search results</div>
               {locationSearchResults.map((r, idx) => (
                 <div
                   key={idx}
@@ -1589,14 +1714,20 @@ export default function CalendarView({
               type="text"
               placeholder="Unit No"
               value={locationUnitNo}
-              onChange={e=>setLocationUnitNo(e.target.value)}
+              onChange={e => {
+                setLocationUnitNo(e.target.value);
+                setLocationPickedExistingId(null);
+              }}
               style={{width:'30%'}}
             />
             <input
               type="text"
               placeholder="Location Comment"
               value={locationComment}
-              onChange={e=>setlocationComment(e.target.value)}
+              onChange={e => {
+                setlocationComment(e.target.value);
+                setLocationPickedExistingId(null);
+              }}
               style={{width:'60%'}}
             />
             <input
@@ -1606,7 +1737,10 @@ export default function CalendarView({
               step={10}
               placeholder="Radius (m)"
               value={locationRadiusMeter}
-              onChange={e=>setLocationRadiusMeter(Number(e.target.value))}
+              onChange={e => {
+                setLocationRadiusMeter(Number(e.target.value));
+                setLocationPickedExistingId(null);
+              }}
               style={{width:'25%'}}
             />
           </div>
@@ -1664,7 +1798,13 @@ export default function CalendarView({
           </div>
           <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
             <button className="btn" onClick={()=>setLocationModalOpen(false)}>Cancel</button>
-            <button className="btn primary" onClick={handleAddLocation} disabled={!selectedLocationPlace}>Add Location</button>
+            <button
+              className="btn primary"
+              onClick={handleAddLocation}
+              disabled={!selectedLocationPlace}
+            >
+              {locationPickedExistingId ? 'Use this location' : 'Add location'}
+            </button>
           </div>
         </div>
       </Modal>
@@ -2126,8 +2266,8 @@ export default function CalendarView({
                     })()}
                     
 
-                    {/* Publish Option */}
-                    <div style={{marginTop:8}}>
+                    {/* Publish / Geofencing Options */}
+                    <div style={{marginTop:8, display:'flex', alignItems:'center', gap:16, flexWrap:'wrap'}}>
                       <label style={{display:'flex', alignItems:'center', gap:8}}>
                         <input
                           type="checkbox"
@@ -2135,6 +2275,14 @@ export default function CalendarView({
                           onChange={e => handleShiftUpdate({ publish: e.target.checked ? 1 : 0 })}
                         />
                         Publish
+                      </label>
+                      <label style={{display:'flex', alignItems:'center', gap:8}}>
+                        <input
+                          type="checkbox"
+                          checked={!!currentTask.isLocation}
+                          onChange={e => handleShiftUpdate({ isLocation: e.target.checked })}
+                        />
+                        Location
                       </label>
                     </div>
 
@@ -3010,8 +3158,39 @@ export default function CalendarView({
     );
   }
 
+  function getCreateShiftAssignmentSummary() {
+    const sup = currentTask.staff_id ? staffs.find(s => s.id === currentTask.staff_id) : null;
+    const supervisorName = sup?.name || '';
+    const members = Array.isArray(currentTask.task_team_members) ? currentTask.task_team_members : [];
+    const cleanerNames = members
+      .filter(id => id !== currentTask.staff_id)
+      .map(id => staffs.find(s => s.id === id)?.name)
+      .filter(Boolean);
+    const supPart = supervisorName ? `${supervisorName} (S)` : '';
+    const cleanPart = cleanerNames.length ? cleanerNames.join(', ') : '';
+    const hasStaff = Boolean(supPart || cleanPart);
+    if (currentTask.assignment_type === 'team' && currentTask.team_id) {
+      const teamName = teams.find(t => t.id === currentTask.team_id)?.name;
+      const bits = [teamName, supPart, cleanPart].filter(Boolean);
+      return bits.length ? bits.join(' — ') : '';
+    }
+    if (!hasStaff) return '';
+    return [supPart, cleanPart].filter(Boolean).join(', ');
+  }
+
+  function getCreateShiftLocationSummary() {
+    if (!currentTask.location_id) return '';
+    const loc = locations.find(l => l.id === currentTask.location_id);
+    if (!loc) return '';
+    const titleLine = [loc.title, loc.address].filter(Boolean).join(', ');
+    const unitPart = loc.unit_no ? `Unit ${loc.unit_no}` : '';
+    return [unitPart, titleLine].filter(Boolean).join(' — ');
+  }
+
   // -- TASK Create Modal --
   function shiftModal() {
+    const assignmentSummary = getCreateShiftAssignmentSummary();
+    const locationSummary = getCreateShiftLocationSummary();
 
     return (
       <Modal open={createModalOpen} title="Create a new shift" onClose={()=>setCreateModalOpen(false)}>
@@ -3029,22 +3208,32 @@ export default function CalendarView({
               type="button"
             >Team</button>
           </div>
-          <label>
+          {/* <label>
             Shift Name
             <input value={currentTask.task_name} onChange={e=>setCurrentTask(f=>({...f, task_name:e.target.value}))} style={{width:'100%',marginTop:4}} />
-          </label>
+          </label> */}
           {currentTask.assignment_type==='team' && (
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
               <span>Team:</span>
               <button className="btn" onClick={openTeamSelectionModal} type="button">
                 {currentTask.team_id ? (teams.find(t=>t.id===currentTask.team_id)?.name || 'Selected') : 'Select Team'}
               </button>
+              {assignmentSummary && (
+                <span style={{fontSize:13,color:'#374151',flex:'1 1 200px',lineHeight:1.4}}>
+                  {assignmentSummary}
+                </span>
+              )}
             </div>
           )}
           {currentTask.assignment_type==='individual' && (
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
               <span>Staff:</span>
               <button className="btn" onClick={openManageStaffModal}>Manage Staff</button>
+              {assignmentSummary && (
+                <span style={{fontSize:13,color:'#374151',flex:'1 1 200px',lineHeight:1.4}}>
+                  {assignmentSummary}
+                </span>
+              )}
             </div>
           )}
           <div style={{display:'flex',gap:8}}>
@@ -3116,15 +3305,21 @@ export default function CalendarView({
               />
             </label>
           </div>
-          <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             <span>Location:</span>
             <button className="btn" onClick={openLocationSelectionModal} type="button">
               {currentTask.location_id ? (locations.find(l=>l.id===currentTask.location_id)?.title || 'Selected') : 'Select Location'}
             </button>
+            {locationSummary && (
+              <span style={{fontSize:13,color:'#374151',flex:'1 1 200px',lineHeight:1.4}} title={locationSummary}>
+                {locationSummary}
+              </span>
+            )}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:12}}>
             {/* <label><input type="checkbox" checked={currentTask.include_location_details} onChange={e=>setCurrentTask(f=>({...f, include_location_details:e.target.checked}))}/> Include Location Details</label> */}
             <label><input type="checkbox" checked={currentTask.publish} onChange={e=>setCurrentTask(f=>({...f, publish:e.target.checked}))}/> Publish Event</label>
+            <label><input type="checkbox" checked={!!currentTask.isLocation} onChange={e=>setCurrentTask(f=>({...f, isLocation:e.target.checked}))}/> Location</label>
           </div>
           <label>
             Shift Instructions
@@ -3280,6 +3475,13 @@ export default function CalendarView({
           <FullCalendar
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
             initialView='timeGridWeek'
+            // dayCellContent={(arg) => {
+            //   const date = arg.date;
+            //   const d = String(date.getDate()).padStart(2, '0');
+            //   const m = String(date.getMonth() + 1).padStart(2, '0');
+            //   return `${d}/${m}`;
+            // }}
+
             headerToolbar={{
               left: 'prev,next today createTask details publishTasks',
               center: 'title',
@@ -3381,10 +3583,11 @@ export default function CalendarView({
 
               if (newView === 'dayGridMonth') {
                 const monthKey = dayjs(arg.start).startOf('month').format('YYYY-MM');
-                const fetchKey = `${newView}:${monthKey}`;
+                const fetchKey = `${monthKey}`;
+                debugger;
                 if (lastFetchedMonthKeyRef.current !== fetchKey) {
-                  lastFetchedMonthKeyRef.current = fetchKey;
                   fetchTasksForMonth(arg.start);
+                  lastFetchedMonthKeyRef.current = fetchKey;
                 }
               } else {
                 fetchTasksForMonth(arg.start);
@@ -3463,7 +3666,24 @@ export default function CalendarView({
                 tooltip.remove();
               });
             }}
+
+            dayHeaderContent={(arg) => {
+              const date = arg.date;
+              // debugger;
             
+              const d = String(date.getDate()).padStart(2, '0');
+              const m = String(date.getMonth() + 1).padStart(2, '0');
+            
+              const weekdayShort = date.toLocaleDateString('en-US', { weekday: 'short' });
+            
+              // 👉 Week / Day view → show "Mon 19/03"
+              if (currentView === 'timeGridWeek' || currentView === 'timeGridDay') {
+                return `${weekdayShort} ${d}/${m}`;
+              }
+            
+              // 👉 Month view → show only weekday "Mon"
+              return weekdayShort;
+            }}
             height={calendarHeight} />
         </div>
         {EditTaskModal()}

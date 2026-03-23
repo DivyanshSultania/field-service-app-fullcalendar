@@ -4,12 +4,58 @@ import {authFetch} from './../pages/utils';
 
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
+const BACKEND_PUBLIC_URL = VITE_KEY;
+
+function getBackendOrigin(url) {
+  if (!url) return '';
+  try {
+    return new URL(url).origin;
+  } catch {
+    return String(url).replace(/\/+$/, '');
+  }
+}
+
+function buildViewStaffRosterLink(staffMember) {
+  if (!staffMember?.id) return '';
+  const key1 = staffMember.key || staffMember.key1;
+  const key2 = staffMember.key2;
+  if (!key1 || !key2) return '';
+  const params = new URLSearchParams({
+    url_id: staffMember.id,
+    key: key1,
+    key2,
+  });
+  return `${getBackendOrigin(BACKEND_PUBLIC_URL)}/schedule/viewStaffRoster?${params.toString()}`;
+}
+
+function textColorForBackground(hex) {
+  if (!hex || typeof hex !== 'string') return '#ffffff';
+  let h = hex.trim();
+  if (!h.startsWith('#')) h = `#${h}`;
+  const n = h.slice(1);
+  let r; let g; let b;
+  if (n.length === 3) {
+    r = parseInt(n[0] + n[0], 16);
+    g = parseInt(n[1] + n[1], 16);
+    b = parseInt(n[2] + n[2], 16);
+  } else if (n.length === 6) {
+    r = parseInt(n.slice(0, 2), 16);
+    g = parseInt(n.slice(2, 4), 16);
+    b = parseInt(n.slice(4, 6), 16);
+  } else {
+    return '#ffffff';
+  }
+  if ([r, g, b].some(Number.isNaN)) return '#ffffff';
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.55 ? '#111827' : '#ffffff';
+}
 
 export default function StaffManagement() {
   const [staff, setStaff] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [editStaffId, setEditStaffId] = useState(null);
+  const [copyFeedback, setCopyFeedback] = useState('');
   const [newStaff, setNewStaff] = useState({
     name: '',
     email: '',
@@ -36,12 +82,14 @@ export default function StaffManagement() {
 
   function handleAddStaffClick() {
     setEditMode(false);
+    setCopyFeedback('');
     setShowModal(true);
   }
 
   function handleEditStaff(staff) {
     setEditMode(true);
     setEditStaffId(staff.id);
+    setCopyFeedback('');
     setNewStaff({
       name: staff.name || '',
       email: staff.email || '',
@@ -61,6 +109,7 @@ export default function StaffManagement() {
 
   function handleCancel() {
     setShowModal(false);
+    setCopyFeedback('');
     setNewStaff({
       name: '',
       email: '',
@@ -77,7 +126,6 @@ export default function StaffManagement() {
   function handleSubmit(e) {
     e.preventDefault();
     if (editMode) {
-      debugger;
       authFetch(`${VITE_KEY}/api/staff/${editStaffId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -90,6 +138,7 @@ export default function StaffManagement() {
         .then(updatedStaff => {
           setStaff(prev => prev.map(s => (s.id === editStaffId ? updatedStaff : s)));
           setShowModal(false);
+          setCopyFeedback('');
           setNewStaff({
             name: '',
             email: '',
@@ -119,6 +168,7 @@ export default function StaffManagement() {
         .then(addedStaff => {
           setStaff(prev => [addedStaff, ...prev]);
           setShowModal(false);
+          setCopyFeedback('');
           setNewStaff({
             name: '',
             email: '',
@@ -135,6 +185,27 @@ export default function StaffManagement() {
         });
     }
   }
+
+  async function handleCopyRosterLink() {
+    const currentStaff = staff.find(member => member.id === editStaffId);
+    debugger;
+    const rosterLink = buildViewStaffRosterLink(currentStaff);
+    if (!rosterLink) {
+      setCopyFeedback('Roster link unavailable');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(rosterLink);
+      setCopyFeedback('Copied');
+    } catch (error) {
+      console.error('Failed to copy roster link', error);
+      setCopyFeedback('Copy failed');
+    }
+  }
+
+  const currentEditStaff = staff.find(member => member.id === editStaffId);
+  const rosterLink = editMode ? buildViewStaffRosterLink(currentEditStaff) : '';
 
   const modal = (
     <div style={{
@@ -189,13 +260,29 @@ export default function StaffManagement() {
           </div>
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', marginBottom: 4 }}>Staff Color</label>
-            <input
-              type="color"
-              name="color"
-              value={newStaff.color}
-              onChange={handleInputChange}
-              style={{ width: '100%', padding: '4px', boxSizing: 'border-box', height: '36px' }}
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{
+                background: newStaff.color || '#465fff',
+                color: textColorForBackground(newStaff.color || '#465fff'),
+                width: 40,
+                height: 40,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontWeight: 600,
+                flexShrink: 0,
+              }}>
+                {newStaff.name?.trim()?.[0]?.toUpperCase() || '?'}
+              </div>
+              <input
+                type="color"
+                name="color"
+                value={newStaff.color}
+                onChange={handleInputChange}
+                style={{ flex: 1, padding: '4px', boxSizing: 'border-box', height: '36px' }}
+              />
+            </div>
           </div>
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', marginBottom: 4 }}>Role</label>
@@ -232,6 +319,35 @@ export default function StaffManagement() {
               <option value="Inactive">Inactive</option>
             </select>
           </div>
+          {editMode && (
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', marginBottom: 4 }}>View Staff Roster Link</label>
+              <button
+                type="button"
+                onClick={handleCopyRosterLink}
+                disabled={!rosterLink}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  border: '1px solid #d1d5db',
+                  borderRadius: 8,
+                  background: rosterLink ? '#f9fafb' : '#f3f4f6',
+                  color: rosterLink ? '#1d4ed8' : '#9ca3af',
+                  cursor: rosterLink ? 'pointer' : 'not-allowed',
+                  textAlign: 'left',
+                  wordBreak: 'break-all',
+                }}
+                title={rosterLink ? 'Click to copy roster link' : 'Roster link unavailable'}
+              >
+                {rosterLink || 'Roster link unavailable until staff keys are available'}
+              </button>
+              {copyFeedback && (
+                <div style={{ marginTop: 6, fontSize: 12, color: copyFeedback === 'Copied' ? '#065f46' : '#b45309' }}>
+                  {copyFeedback}
+                </div>
+              )}
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
             <button type="button" onClick={handleCancel} className="btn">Cancel</button>
             <button type="submit" className="btn primary">{editMode ? 'Update Staff Member' : 'Add Staff Member'}</button>
@@ -264,8 +380,8 @@ export default function StaffManagement() {
               <td style={{ padding: '12px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <div style={{
-                    background: '#EEF2FF',
-                    color: '#4F46E5',
+                    background: s.color || '#EEF2FF',
+                    color: textColorForBackground(newStaff.color || '#465fff'),
                     width: 32,
                     height: 32,
                     borderRadius: '50%',
