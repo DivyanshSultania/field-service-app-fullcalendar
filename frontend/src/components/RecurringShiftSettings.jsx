@@ -32,6 +32,13 @@ export default function RecurringShiftSettings({ task }) {
   // Dropdown state for recurring pattern actions
   const [selectedPatternAction, setSelectedPatternAction] = useState("");
 
+  // Cutover date (inclusive) for applying updates to generated recurring tasks.
+  // Default: the currently focused task's start date.
+  const changeFromDateIso = (() => {
+    const dt = task?.start_time || task?.start_date;
+    return dt ? dayjs(dt).startOf("day").toISOString() : dayjs().startOf("day").toISOString();
+  })();
+
   // Loader state for dropping recurring patterns
   // const [isDropping, setIsDropping] = useState(false);
 
@@ -151,6 +158,7 @@ export default function RecurringShiftSettings({ task }) {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
+                date: changeFromDateIso,
                 team_id: selectedTeam.id,
                 staff_id: supervisorId,
                 task_team_members: teamManageCleaners
@@ -327,6 +335,7 @@ export default function RecurringShiftSettings({ task }) {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
+                date: changeFromDateIso,
                 staff_id: manageStaffModalSupervisor,
                 task_team_members: manageStaffModalCleaners
               })
@@ -526,6 +535,7 @@ export default function RecurringShiftSettings({ task }) {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
+                date: changeFromDateIso,
                 location_id: loc.id
               })
             })
@@ -787,6 +797,7 @@ export default function RecurringShiftSettings({ task }) {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
+                date: changeFromDateIso,
                 ...clientForm
               })
             })
@@ -1043,6 +1054,7 @@ export default function RecurringShiftSettings({ task }) {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              date: changeFromDateIso,
               new_start_time: newStartTime,
               new_end_time: newEndTime
             })
@@ -1076,9 +1088,17 @@ export default function RecurringShiftSettings({ task }) {
       const data = await res.json();
 
       // Set recurring settings state if array
-      if (Array.isArray(data.row)) {
+      if (data && data.row && Array.isArray(data.row) && data.row.length > 0) {
         setRecurringSettings(data.row);
+      } else {
+        const recurringSetting = await authFetch(`${VITE_KEY}/api/recurring_setting/${task.recurring_settings}`);
+        const recurringSettingData = await recurringSetting.json();
+
+        if (recurringSettingData && recurringSettingData.row) {
+          setRecurringSettings([recurringSettingData.row]);
+        }
       }
+
 
       // Remove selecting frequency/days from first recurring; instead, reset form inputs
       setFrequency(1);

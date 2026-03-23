@@ -58,7 +58,7 @@ function AuthenticatedApp({ user, onLogout }) {
   
     useEffect(() => {
       authFetch(`${VITE_KEY}/api/staff`).then(setStaff).catch(()=>{});
-      authFetch(`${VITE_KEY}/api/tasks`).then(setTasks).catch(()=>{});
+      // authFetch(`${VITE_KEY}/api/tasks`).then(setTasks).catch(()=>{});
       authFetch(`${VITE_KEY}/api/teams`).then(setTeams).catch(()=>{});
       authFetch(`${VITE_KEY}/api/clients`).then(setClients).catch(()=>{});
     }, []);
