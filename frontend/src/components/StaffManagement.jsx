@@ -17,8 +17,9 @@ function getBackendOrigin(url) {
 
 function buildViewStaffRosterLink(staffMember) {
   if (!staffMember?.id) return '';
-  const key1 = staffMember.key || staffMember.key1;
-  const key2 = staffMember.key2;
+  debugger;
+  const key1 = staffMember.roster_token1 || staffMember.key1;
+  const key2 = staffMember.roster_token2;
   if (!key1 || !key2) return '';
   const params = new URLSearchParams({
     url_id: staffMember.id,
