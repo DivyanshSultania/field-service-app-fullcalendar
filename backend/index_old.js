@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   start_time TEXT,
   end_time TEXT,
   publish INTEGER DEFAULT 0,
+  isLocation INTEGER DEFAULT 0,
   shift_instructions TEXT,
   color TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -425,12 +426,12 @@ app.get('/api/seed', async (req, res) => {
     await runSql(
       `INSERT OR IGNORE INTO tasks
         (id, task_name, assignment_type, staff_id, team_id, client_id, location_id,
-         start_time, end_time, publish, shift_instructions, color,
+         start_time, end_time, publish, isLocation, shift_instructions, color,
          started_at, stopped_at, travel_from, travel_dist, travel_duration,
          payment_type, payment_amount, payment_date,
          task_client_name, task_client_company, task_client_email, task_client_phone,
          task_client_abn, task_client_acn, task_client_instruction, task_client_information, task_client_property_information)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         taskId,
         'Morning Cleaning',
@@ -441,6 +442,7 @@ app.get('/api/seed', async (req, res) => {
         locationId,
         startTime,
         endTime,
+        1,
         1,
         'Ensure lobby and restroom are clean.',
         '#7C3AED',
@@ -757,8 +759,22 @@ app.delete('/api/locations/:id', async (req, res) => {
 /* -----------------------------
    📋 Tasks CRUD (All Columns)
 ----------------------------- */
-app.get('/api/tasks', async (_, res) => {
+app.get('/api/tasks', async (req, res) => {
   try {
+    const { from, to } = req.query;
+    const where = [];
+    const params = [];
+
+    if (from) {
+      where.push('date(t.start_time) >= date(?)');
+      params.push(from);
+    }
+
+    if (to) {
+      where.push('date(t.start_time) < date(?)');
+      params.push(to);
+    }
+
     const rows = await allSql(`
       SELECT t.*, s.name AS staff_name, c.client_name AS client_name, l.title AS location_title, tm.name AS team_supervisor
       FROM tasks t
@@ -767,7 +783,8 @@ app.get('/api/tasks', async (_, res) => {
       LEFT JOIN locations l ON t.location_id = l.id
       LEFT JOIN teams te ON t.team_id = te.id
       LEFT JOIN staff tm ON te.supervisor_id = tm.id
-    `);
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    `, params);
 
       // Add task_team_members for each task
       for (const task of rows) {
@@ -823,14 +840,14 @@ app.post('/api/tasks', async (req, res) => {
     const id = uuidv4();
     const fields = [
       'task_name', 'assignment_type', 'staff_id', 'team_id', 'client_id', 'location_id',
-      'start_time', 'end_time', 'publish', 'shift_instructions', 'color',
+      'start_time', 'end_time', 'publish', 'isLocation', 'shift_instructions', 'color',
       'started_at', 'stopped_at', 'travel_from', 'travel_dist', 'travel_duration',
       'payment_type', 'payment_amount', 'payment_date',
       'task_client_name', 'task_client_company', 'task_client_email', 'task_client_phone',
       'task_client_abn', 'task_client_acn', 'task_client_instruction',
       'task_client_information', 'task_client_property_information'
     ];
-    const values = fields.map(k => req.body[k] || null);
+    const values = fields.map(k => (req.body[k] ?? null));
 
     await runSql(
       `INSERT INTO tasks (${fields.join(',')}, id)
@@ -859,7 +876,7 @@ app.put('/api/tasks/:id', async (req, res) => {
   try {
     const fields = [
       'task_name', 'assignment_type', 'staff_id', 'team_id', 'client_id', 'location_id',
-      'start_time', 'end_time', 'publish', 'shift_instructions', 'color',
+      'start_time', 'end_time', 'publish', 'isLocation', 'shift_instructions', 'color',
       'started_at', 'stopped_at', 'travel_from', 'travel_dist', 'travel_duration',
       'payment_type', 'payment_amount', 'payment_date',
       'task_client_name', 'task_client_company', 'task_client_email', 'task_client_phone',
@@ -868,7 +885,7 @@ app.put('/api/tasks/:id', async (req, res) => {
     ];
 
     const setClause = fields.map(f => `${f}=?`).join(', ');
-    const values = fields.map(k => req.body[k] || null);
+    const values = fields.map(k => (req.body[k] ?? null));
 
     await runSql(`UPDATE tasks SET ${setClause} WHERE id=?`, [...values, req.params.id]);
 
@@ -1091,7 +1108,9 @@ app.delete('/api/recurring_setting/:id', async (req, res) => {
 app.put('/api/recurring_setting/:id/tasks', async (req, res) => {
   try {
     const recId = req.params.id;
+    let transactionStarted = false;
     const {
+      date,
       team_id,
       staff_id,
       task_team_members,
@@ -1101,9 +1120,110 @@ app.put('/api/recurring_setting/:id/tasks', async (req, res) => {
       location_id
     } = req.body;
 
+    const changeFromIso = date
+      ? (String(date).includes('T') ? dayjs(date).toISOString() : dayjs(date).startOf('day').toISOString())
+      : dayjs().startOf('day').toISOString();
+
+    // Only affect tasks on/after the requested cutover date.
     const tasks = await allSql(
-      `SELECT id FROM tasks WHERE recurring_settings = ?`,
+      `SELECT id FROM tasks
+       WHERE recurring_settings = ?
+       AND start_time >= ?
+       ORDER BY start_time`,
+      [recId, changeFromIso]
+    );
+
+    if (!tasks || tasks.length === 0) {
+      return res.json({ ok: true, updated: 0 });
+    }
+
+    const existingSetting = await getSql(
+      'SELECT * FROM recurring_task_settings WHERE id=?',
       [recId]
+    );
+
+    if (!existingSetting) {
+      return res.status(404).json({ error: 'Recurring task settings not found' });
+    }
+
+    await runSql('BEGIN TRANSACTION');
+    transactionStarted = true;
+
+    // Compute updated details/task_length for the NEW recurring_task_settings row.
+    let newTaskLength = existingSetting.task_length;
+    if (new_start_time && new_end_time) {
+      const [sh, sm] = new_start_time.split(':').map(Number);
+      const [eh, em] = new_end_time.split(':').map(Number);
+      const lengthMinutes = dayjs()
+        .hour(eh)
+        .minute(em)
+        .diff(dayjs().hour(sh).minute(sm), 'minute');
+
+      if (!Number.isNaN(lengthMinutes)) {
+        newTaskLength = String(lengthMinutes);
+      }
+    }
+
+    let newDetails = existingSetting.details || "";
+    if (team_id || staff_id) {
+      let detailsStr = "";
+
+      if (team_id) {
+        const team = await getSql('SELECT name FROM teams WHERE id=?', [team_id]);
+        detailsStr = team?.name ? team.name : "";
+      } else if (staff_id) {
+        const st = await getSql('SELECT name FROM staff WHERE id=?', [staff_id]);
+        if (st?.name) {
+          detailsStr = st.name + " (S)";
+        }
+      }
+
+      let memberNames = [];
+      if (Array.isArray(task_team_members)) {
+        for (const mid of task_team_members) {
+          const st = await getSql('SELECT name FROM staff WHERE id=?', [mid]);
+          if (st?.name) memberNames.push(st.name);
+        }
+      }
+
+      if (detailsStr && memberNames.length > 0) {
+        detailsStr = detailsStr + " - " + memberNames.join(", ");
+      } else if (!detailsStr) {
+        detailsStr = memberNames.join(", ");
+      }
+
+      newDetails = detailsStr;
+    }
+
+    // Create a new recurring_task_settings row and link affected tasks to it.
+    const newRecId = uuidv4();
+    await runSql(
+      `INSERT INTO recurring_task_settings
+       (id, request_freq, monday, tuesday, wednesday, thrusday, friday, saturday, sunday,
+        occurrences, close_date, parent_task, task_length, details)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        newRecId,
+        existingSetting.request_freq,
+        existingSetting.monday,
+        existingSetting.tuesday,
+        existingSetting.wednesday,
+        existingSetting.thrusday,
+        existingSetting.friday,
+        existingSetting.saturday,
+        existingSetting.sunday,
+        existingSetting.occurrences ?? null,
+        existingSetting.close_date ?? null,
+        existingSetting.parent_task,
+        newTaskLength,
+        newDetails
+      ]
+    );
+
+    await runSql(
+      `UPDATE tasks SET recurring_settings=?
+       WHERE recurring_settings=? AND start_time >= ?`,
+      [newRecId, recId, changeFromIso]
     );
 
     for (const t of tasks) {
@@ -1208,22 +1328,6 @@ app.put('/api/recurring_setting/:id/tasks', async (req, res) => {
         }
       }
 
-      // [PATCH] Update task_length in recurring_task_settings if new_start_time & new_end_time are provided
-      if (new_start_time && new_end_time) {
-        const [sh, sm] = new_start_time.split(':').map(Number);
-        const [eh, em] = new_end_time.split(':').map(Number);
-
-        const lengthMinutes = dayjs()
-          .hour(eh)
-          .minute(em)
-          .diff(dayjs().hour(sh).minute(sm), 'minute');
-
-        await runSql(
-          'UPDATE recurring_task_settings SET task_length=? WHERE id=?',
-          [String(lengthMinutes), recId]
-        );
-      }
-
       if (location_id) {
         await runSql(
           'UPDATE tasks SET location_id=? WHERE id=?',
@@ -1232,42 +1336,16 @@ app.put('/api/recurring_setting/:id/tasks', async (req, res) => {
       }
     }
 
-    // [PATCH] Update details in recurring_task_settings if team_id, staff_id or task_team_members change
-    let detailsStr = "";
-    if (team_id || staff_id) {
-      if (team_id) {
-        const team = await getSql('SELECT name FROM teams WHERE id=?', [team_id]);
-        detailsStr = team?.name ? team.name : "";
-      } else if (staff_id) {
-        const st = await getSql('SELECT name, role FROM staff WHERE id=?', [staff_id]);
-        if (st) {
-          detailsStr = st.name + " (S)";
-        }
-      }
-  
-      let memberNames = [];
-      if (Array.isArray(task_team_members)) {
-        for (const mid of task_team_members) {
-          const st = await getSql('SELECT name, role FROM staff WHERE id=?', [mid]);
-          if (st) memberNames.push(st.name);
-        }
-      }
-  
-      if (detailsStr && memberNames.length > 0) {
-        detailsStr = detailsStr + " - " + memberNames.join(", ");
-      } else if (!detailsStr) {
-        detailsStr = memberNames.join(", ");
-      }
-  
-      await runSql(
-        'UPDATE recurring_task_settings SET details=? WHERE id=?',
-        [detailsStr, recId]
-      );
-    }
-
-
-    res.json({ ok: true, updated: tasks.length });
+    // await runSql('COMMIT');
+    res.json({ ok: true, updated: tasks.length, new_recurring_task_settings_id: newRecId, change_from_date: changeFromIso });
   } catch (e) {
+    // if (transactionStarted) {
+    //   try {
+    //     await runSql('ROLLBACK');
+    //   } catch (rollbackErr) {
+    //     console.error('rollback error', rollbackErr);
+    //   }
+    // }
     console.error('update recurring tasks error', e);
     res.status(500).json({ error: e.message });
   }
@@ -1415,13 +1493,13 @@ app.post("/api/tasks/:id/recurring", async (req, res) => {
         await runSql(
           `INSERT INTO tasks
            (id, task_name, assignment_type, staff_id, team_id, client_id, location_id,
-            start_time, end_time, publish, shift_instructions, color,
+            start_time, end_time, publish, isLocation, shift_instructions, color,
             started_at, stopped_at, travel_from, travel_dist, travel_duration,
             payment_type, payment_amount, payment_date,
             task_client_name, task_client_company, task_client_email, task_client_phone,
             task_client_abn, task_client_acn, task_client_instruction,
             task_client_information, task_client_property_information, recurring_settings)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             newId,
             task.task_name,
@@ -1433,6 +1511,7 @@ app.post("/api/tasks/:id/recurring", async (req, res) => {
             newStart,
             newEnd,
             task.publish,
+            task.isLocation || 0,
             task.shift_instructions,
             task.color,
             null,
@@ -1621,7 +1700,27 @@ app.get('/api/taskschedule', async (req, res) => {
     `;
 
     const rows = await allSql(sql, params);
-    res.json(rows);
+    const withDurations = rows.map((row) => {
+      const scheduledMinutes = (row.start_time && row.end_time)
+        ? Math.max(0, Math.floor((new Date(row.end_time) - new Date(row.start_time)) / 60000))
+        : 0;
+      const loggedMinutes = (row.started_at && row.stopped_at)
+        ? Math.max(0, Math.floor((new Date(row.stopped_at) - new Date(row.started_at)) / 60000))
+        : 0;
+      const payLengthMinutes = Math.min(scheduledMinutes, loggedMinutes);
+
+      return {
+        ...row,
+        // keep compatibility with report UI fields
+        log_start_time: row.started_at || null,
+        log_end_time: row.stopped_at || null,
+        scheduled_length_minutes: scheduledMinutes,
+        log_length_minutes: loggedMinutes,
+        pay_length_minutes: payLengthMinutes
+      };
+    });
+
+    res.json(withDurations);
   } catch (e) {
 
     console.error('Task scehdule error', e);

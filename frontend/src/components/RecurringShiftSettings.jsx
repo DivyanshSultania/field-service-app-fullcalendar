@@ -1187,6 +1187,7 @@ export default function RecurringShiftSettings({ task }) {
         staff_id: editTaskData.staff_id || null,
         client_id: editTaskData.client_id || null,
         location_id: editTaskData.location_id || null,
+        isLocation: !!editTaskData.isLocation,
         start_time: editTaskData.start_time,
         end_time: editTaskData.end_time
       };
