@@ -9,6 +9,7 @@ import RecurringShiftSettings from './RecurringShiftSettings'
 import TaskMapInline from './TaskMapInline';
 import { GOOGLE_MAPS_API_KEY, loadGoogleMapsApi } from '../utils/googleMaps';
 import {authFetch} from './../pages/utils';
+import { calculateTaskTravelData, getAssignedStaffIds } from '../utils/taskTravel';
 
 // TODO: refresh on repeat create
 // TODO: check why monday is selected, and it should apply from current week
@@ -43,8 +44,23 @@ import {authFetch} from './../pages/utils';
 
 export default function CalendarView({
   filter = { type: 'staff', ids: [], hiddenDays: [] },
-  onHiddenDaysChange
+  onHiddenDaysChange,
+  openTaskRequest,
+  onOpenTaskHandled
 }) {
+  async function readJsonOrFallback(response, fallback) {
+    try {
+      return await response.json();
+    } catch {
+      return fallback;
+    }
+  }
+
+  async function getResponseError(response, fallbackMessage) {
+    const data = await readJsonOrFallback(response, {});
+    return data?.error || fallbackMessage;
+  }
+
   function showToast(msg, bgColor) {
     const div = document.createElement('div');
     div.innerText = msg || 'Unexpected error';
@@ -85,7 +101,11 @@ export default function CalendarView({
   const [events, setEvents] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const taskFetchRequestIdRef = useRef(0);
+  const taskFetchRequestIdsRef = useRef(new Map());
+  const loadedMonthKeysRef = useRef(new Set());
+  const pendingTaskFetchMonthsRef = useRef(new Set());
+  /** Month-keyed task cache for the current browser session. */
+  const tasksByMonthRef = useRef(new Map());
 
   // Temp States
   const [currentTask, setCurrentTask] = useState({});
@@ -116,6 +136,12 @@ export default function CalendarView({
   const [taskMessages, setTaskMessages] = useState([]);
   const [newMessageText, setNewMessageText] = useState('');
   const [travelInfo, setTravelInfo] = useState({ distance_km: null, duration_min: null, from_location: null });
+  const [reportStaffTravelRows, setReportStaffTravelRows] = useState([]);
+  const [reportStaffTravelLoading, setReportStaffTravelLoading] = useState(false);
+  const [reportStaffTravelSaving, setReportStaffTravelSaving] = useState(false);
+  const [reportStaffTravelError, setReportStaffTravelError] = useState('');
+  const [reportTravelCalculating, setReportTravelCalculating] = useState(false);
+  const [reportStaffTravelLoadedTaskId, setReportStaffTravelLoadedTaskId] = useState(null);
 
   // Calendar-level Details Modal (Images / Comments / Instructions Reply / Payments)
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
@@ -150,8 +176,6 @@ export default function CalendarView({
   const [locationLoadingDelete, setLocationLoadingDelete] = useState({});
   /** When set, confirming uses this saved location row unless the user edits fields (then a new location is created). */
   const [locationPickedExistingId, setLocationPickedExistingId] = useState(null);
-  /** YYYY-MM for which /api/tasks was last loaded successfully; same session only (cleared on full page reload). */
-  const lastFetchedMonthKeyRef = useRef(null);
 
   const VITE_KEY = import.meta.env.VITE_API_URL;
   const R2_PUBLIC_URL = 'https://pub-ac8edfc52ef04beba837f1804a4abf42.r2.dev';
@@ -170,6 +194,10 @@ export default function CalendarView({
 
   console.log('-------VITE_KEY-------', VITE_KEY);
 
+  function getMonthKey(dateLike) {
+    return dayjs(dateLike ?? undefined).startOf('month').format('YYYY-MM');
+  }
+
   function getMonthRangeFromDate(dateLike) {
     const base = dateLike ? dayjs(dateLike) : dayjs();
     const monthStart = base.startOf('month');
@@ -180,38 +208,145 @@ export default function CalendarView({
     };
   }
 
+  function getMonthKeysForRange(startLike, endLike) {
+    const startMonth = dayjs(startLike ?? undefined).startOf('month');
+    if (!startMonth.isValid()) return [];
+
+    const endBoundary = endLike
+      ? dayjs(endLike).subtract(1, 'millisecond')
+      : startMonth;
+    const endMonth = (endBoundary.isValid() ? endBoundary : startMonth).startOf('month');
+
+    const monthKeys = [];
+    let cursor = startMonth;
+    while (cursor.isBefore(endMonth) || cursor.isSame(endMonth, 'month')) {
+      monthKeys.push(cursor.format('YYYY-MM'));
+      cursor = cursor.add(1, 'month');
+    }
+
+    return monthKeys;
+  }
+
+  function getReportTravelAssignedStaffIds(task) {
+    if (!task || task.staff_id === 'STATIC-COVER-STAFF' || task.assignment_type === 'cover') {
+      return [];
+    }
+
+    return getAssignedStaffIds(task);
+  }
+
+  function getCalendarStaffName(staffId) {
+    return staffs.find(staff => staff.id === staffId)?.name || '';
+  }
+
+  function buildReportStaffTravelRows(task, travelRows = []) {
+    const assignedStaffIds = getReportTravelAssignedStaffIds(task);
+    const taskMemberNames = Array.isArray(task?.task_team_members_name) ? task.task_team_members_name : [];
+    const taskMemberIds = Array.isArray(task?.task_team_members) ? task.task_team_members : [];
+    const memberNameMap = new Map(taskMemberIds.map((staffId, index) => [staffId, taskMemberNames[index] || '']));
+    const travelMap = new Map(
+      (Array.isArray(travelRows) ? travelRows : [])
+        .filter(row => row?.staff_id)
+        .map(row => [row.staff_id, row])
+    );
+
+    return assignedStaffIds.map(staffId => {
+      const isSupervisor = staffId === task?.staff_id;
+      const sourceRow = travelMap.get(staffId) || {};
+      const staffName = isSupervisor
+        ? (task?.staff_name || getCalendarStaffName(staffId) || staffId)
+        : (memberNameMap.get(staffId) || getCalendarStaffName(staffId) || staffId);
+
+      return {
+        staff_id: staffId,
+        staff_name: staffName,
+        role_label: isSupervisor ? 'Supervisor' : 'Cleaner',
+        travel_distance: sourceRow.travel_distance ?? sourceRow.travel_dist ?? '',
+        travel_duration: sourceRow.travel_duration ?? sourceRow.travel_time ?? '',
+      };
+    });
+  }
+
+  function syncTasksFromMonthCache(nextCache = tasksByMonthRef.current) {
+    const mergedTasks = [];
+    const seenTaskIds = new Set();
+
+    Array.from(nextCache.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .forEach(([, monthTasks]) => {
+        (Array.isArray(monthTasks) ? monthTasks : []).forEach((task) => {
+          const dedupeKey = task?.id ?? `${task?.start_time || ''}-${task?.end_time || ''}-${task?.task_name || ''}`;
+          if (seenTaskIds.has(dedupeKey)) return;
+          seenTaskIds.add(dedupeKey);
+          mergedTasks.push(task);
+        });
+      });
+
+    mergedTasks.sort((a, b) => {
+      const aTime = a?.start_time ? dayjs(a.start_time).valueOf() : 0;
+      const bTime = b?.start_time ? dayjs(b.start_time).valueOf() : 0;
+      return aTime - bTime;
+    });
+
+    setTasks(mergedTasks);
+  }
+
+  function updateTaskLoadingState(monthKey, isLoading) {
+    if (!monthKey) return;
+    if (isLoading) {
+      pendingTaskFetchMonthsRef.current.add(monthKey);
+    } else {
+      pendingTaskFetchMonthsRef.current.delete(monthKey);
+    }
+    setTasksLoading(pendingTaskFetchMonthsRef.current.size > 0);
+  }
+
   async function fetchTasksForMonth(dateLike, { force = false } = {}) {
-    const monthKey = dayjs(dateLike ?? undefined).startOf('month').format('YYYY-MM');
-    if (!force && lastFetchedMonthKeyRef.current === monthKey) {
+    const monthKey = getMonthKey(dateLike);
+    if (!force && loadedMonthKeysRef.current.has(monthKey)) {
       return;
     }
 
+    const previousRequestId = taskFetchRequestIdsRef.current.get(monthKey) || 0;
+    const requestId = previousRequestId + 1;
+    taskFetchRequestIdsRef.current.set(monthKey, requestId);
+    updateTaskLoadingState(monthKey, true);
+
     const { from, to } = getMonthRangeFromDate(dateLike);
-    const requestId = ++taskFetchRequestIdRef.current;
-    setTasksLoading(true);
     try {
       const res = await authFetch(`${VITE_KEY}/api/tasks?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
       const taskResp = await res.json();
-      if (taskFetchRequestIdRef.current === requestId) {
-        setTasks(Array.isArray(taskResp) ? taskResp : []);
-        lastFetchedMonthKeyRef.current = monthKey;
+      if (taskFetchRequestIdsRef.current.get(monthKey) === requestId) {
+        const nextCache = new Map(tasksByMonthRef.current);
+        nextCache.set(monthKey, Array.isArray(taskResp) ? taskResp : []);
+        tasksByMonthRef.current = nextCache;
+        loadedMonthKeysRef.current.add(monthKey);
+        syncTasksFromMonthCache(nextCache);
       }
     } catch (err) {
-      if (taskFetchRequestIdRef.current === requestId) {
-        setTasks([]);
-        lastFetchedMonthKeyRef.current = null;
+      if (taskFetchRequestIdsRef.current.get(monthKey) === requestId) {
+        loadedMonthKeysRef.current.delete(monthKey);
       }
       console.error('Failed to fetch tasks for month', err);
     } finally {
-      if (taskFetchRequestIdRef.current === requestId) {
-        setTasksLoading(false);
+      if (taskFetchRequestIdsRef.current.get(monthKey) === requestId) {
+        updateTaskLoadingState(monthKey, false);
       }
     }
   }
 
-  function refreshTasksForCurrentMonth() {
-    const anchorDate = currentRange?.start || new Date();
-    return fetchTasksForMonth(anchorDate, { force: true });
+  function fetchTasksForVisibleRange(startLike, endLike, { force = false } = {}) {
+    const monthKeys = getMonthKeysForRange(startLike, endLike);
+    if (monthKeys.length === 0) return Promise.resolve();
+
+    return Promise.all(
+      monthKeys.map(monthKey => fetchTasksForMonth(`${monthKey}-01`, { force }))
+    );
+  }
+
+  function refreshTasksForCurrentRange() {
+    const range = getActiveRange();
+    return fetchTasksForVisibleRange(range.start, range.end, { force: true });
   }
 
   // Fetch teams, staff, clients, locations
@@ -221,15 +356,75 @@ export default function CalendarView({
     authFetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
     authFetch(`${VITE_KEY}/api/locations`).then(r => r.json()).then(setLocations).catch(() => {});
     authFetch(`${VITE_KEY}/api/team_members`).then(r => r.json()).then(setTeamMembers).catch(() => {});
-    // fetchTasksForMonth(new Date());
+    // fetchTasksForVisibleRange(new Date(), dayjs().add(1, 'day').toDate());
 
     // const listener = () => {
-    //   refreshTasksForCurrentMonth();
+    //   refreshTasksForCurrentRange();
     // };
   
     // window.addEventListener("refreshCalendar", listener);
     // return () => window.removeEventListener("refreshCalendar", listener);
   }, []);
+
+  useEffect(() => {
+    if (!openTaskRequest?.taskId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function openRequestedTask() {
+      try {
+        const response = await authFetch(`${VITE_KEY}/api/tasks/${openTaskRequest.taskId}`);
+        if (!response.ok) {
+          const errorBody = await response.json().catch(() => ({}));
+          throw new Error(errorBody?.error || 'Failed to open task');
+        }
+
+        const task = await response.json();
+        if (cancelled || !task?.id) {
+          return;
+        }
+
+        if (task.start_time) {
+          await fetchTasksForMonth(task.start_time, { force: true });
+          if (cancelled) {
+            return;
+          }
+          const calendarApi = calendarRef.current?.getApi?.();
+          if (calendarApi) {
+            calendarApi.gotoDate(task.start_time);
+          }
+        }
+
+        setCurrentTask({ ...task });
+        openEditTaskModal(task);
+      } catch (error) {
+        console.error('Failed to open requested task', error);
+        showToast(error.message || 'Failed to open task');
+      } finally {
+        if (!cancelled) {
+          onOpenTaskHandled?.();
+        }
+      }
+    }
+
+    openRequestedTask();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [openTaskRequest?.requestedAt, openTaskRequest?.taskId]);
+
+  useEffect(() => {
+    if (!editModalOpen || taskModalEditTab !== 'Report' || !currentTask?.id) {
+      return;
+    }
+
+    loadReportStaffTravel(currentTask).catch((error) => {
+      console.error('Report tab travel load failed', error);
+    });
+  }, [editModalOpen, taskModalEditTab, currentTask?.id]);
 
   useEffect(() => {
     const updateCalendarHeight = () => {
@@ -276,110 +471,394 @@ export default function CalendarView({
     return labels.join(', ');
   };
 
+  function replaceTaskInList(taskList, nextTask) {
+    return taskList.map(task => (
+      task.id === nextTask.id
+        ? { ...task, ...nextTask }
+        : task
+    ));
+  }
+
+  function getTaskDayKey(task) {
+    return task?.start_time ? dayjs(task.start_time).format('YYYY-MM-DD') : '';
+  }
+
+  function tasksShareAssignedStaff(firstTask, secondTask) {
+    const firstIds = new Set([
+      firstTask?.staff_id,
+      ...(Array.isArray(firstTask?.task_team_members) ? firstTask.task_team_members : []),
+    ].filter(Boolean));
+    const secondIds = new Set([
+      secondTask?.staff_id,
+      ...(Array.isArray(secondTask?.task_team_members) ? secondTask.task_team_members : []),
+    ].filter(Boolean));
+
+    for (const staffId of firstIds) {
+      if (secondIds.has(staffId)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async function persistTaskStaffTravel(taskId, staffTravelRecords) {
+    if (!taskId) {
+      return [];
+    }
+
+    const response = await authFetch(`${VITE_KEY}/api/task_staff_travel/task/${taskId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Array.isArray(staffTravelRecords) ? staffTravelRecords : []),
+    });
+
+    if (!response.ok) {
+      throw new Error(await getResponseError(response, 'Failed to update staff travel details'));
+    }
+
+    return readJsonOrFallback(response, []);
+  }
+
+  async function loadReportStaffTravel(task, options = {}) {
+    const { force = false } = options;
+
+    if (!task?.id) {
+      setReportStaffTravelRows([]);
+      setReportStaffTravelLoadedTaskId(null);
+      setReportStaffTravelError('');
+      return;
+    }
+
+    if (!force && reportStaffTravelLoadedTaskId === task.id) {
+      return;
+    }
+
+    setReportStaffTravelLoading(true);
+    setReportStaffTravelError('');
+
+    try {
+      const response = await authFetch(`${VITE_KEY}/api/task_staff_travel/task/${task.id}`);
+      if (!response.ok) {
+        throw new Error(await getResponseError(response, 'Failed to load staff travel'));
+      }
+
+      const rows = await readJsonOrFallback(response, []);
+      const nextRows = buildReportStaffTravelRows(task, rows);
+
+      setReportStaffTravelRows(nextRows);
+      setReportStaffTravelLoadedTaskId(task.id);
+      setCurrentTask(previousTask => (
+        previousTask?.id === task.id
+          ? { ...previousTask, task_staff_travel: rows }
+          : previousTask
+      ));
+    } catch (error) {
+      console.error('Failed to load report staff travel', error);
+      setReportStaffTravelError(error.message || 'Failed to load staff travel');
+    } finally {
+      setReportStaffTravelLoading(false);
+    }
+  }
+
+  function handleReportStaffTravelFieldChange(staffId, field, value) {
+    setReportStaffTravelRows(previousRows => previousRows.map(row => (
+      row.staff_id === staffId
+        ? { ...row, [field]: value }
+        : row
+    )));
+  }
+
+  async function handleSaveReportStaffTravel() {
+    if (!currentTask?.id) {
+      return;
+    }
+
+    setReportStaffTravelSaving(true);
+    setReportStaffTravelError('');
+
+    try {
+      const payload = reportStaffTravelRows.map(row => ({
+        staff_id: row.staff_id,
+        travel_distance: row.travel_distance === '' ? null : Number(row.travel_distance),
+        travel_duration: row.travel_duration === '' ? null : Number(row.travel_duration),
+      }));
+
+      const savedRows = await persistTaskStaffTravel(currentTask.id, payload);
+      const supervisorRow = savedRows.find(row => row?.staff_id === currentTask.staff_id) || null;
+      const taskTravelPatch = {
+        travel_dist: supervisorRow?.travel_distance ?? null,
+        travel_duration: supervisorRow?.travel_duration ?? null,
+      };
+
+      let updatedTaskFields = {};
+      if (currentTask?.staff_id && currentTask.staff_id !== 'STATIC-COVER-STAFF') {
+        const response = await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(taskTravelPatch),
+        });
+
+        if (!response.ok) {
+          throw new Error(await getResponseError(response, 'Failed to update task travel'));
+        }
+
+        updatedTaskFields = await readJsonOrFallback(response, {});
+      }
+
+      const nextTask = {
+        ...currentTask,
+        ...updatedTaskFields,
+        ...taskTravelPatch,
+        task_staff_travel: savedRows,
+      };
+
+      setCurrentTask(nextTask);
+      setTravelInfo(previousTravel => ({
+        ...previousTravel,
+        distance_km: nextTask.travel_dist,
+        duration_min: nextTask.travel_duration,
+      }));
+      setReportStaffTravelRows(buildReportStaffTravelRows(nextTask, savedRows));
+      setReportStaffTravelLoadedTaskId(currentTask.id);
+      showToast('Staff travel updated', '#16a34a');
+    } catch (error) {
+      console.error('Failed to save report staff travel', error);
+      setReportStaffTravelError(error.message || 'Failed to update staff travel');
+      showToast(error.message || 'Failed to update staff travel');
+    } finally {
+      setReportStaffTravelSaving(false);
+    }
+  }
+
+  async function handleCalculateReportStaffTravel() {
+    if (!currentTask?.id) {
+      return;
+    }
+
+    setReportTravelCalculating(true);
+    setReportStaffTravelError('');
+
+    try {
+      const result = await computeAndSaveTravelDistance(currentTask, true);
+      if (result) {
+        const nextTask = {
+          ...(result.task || currentTask),
+          task_staff_travel: result.staffTravelRecords || [],
+        };
+        setReportStaffTravelRows(buildReportStaffTravelRows(nextTask, result.staffTravelRecords || []));
+        setReportStaffTravelLoadedTaskId(currentTask.id);
+      }
+    } finally {
+      setReportTravelCalculating(false);
+    }
+  }
+
+  async function syncTaskTravelDetails(task, options = {}) {
+    const {
+      persistTask = true,
+      persistStaffTravel = true,
+      supervisorOverride = null,
+      updateState = true,
+    } = options;
+
+    const assignedStaffIds = task?.staff_id === 'STATIC-COVER-STAFF' || task?.assignment_type === 'cover'
+      ? []
+      : getAssignedStaffIds(task);
+    const canCalculate = task?.start_time && task?.location_id && assignedStaffIds.length > 0;
+
+    let supervisorTravel = null;
+    let staffTravelRecords = assignedStaffIds.map(staffId => ({
+      staff_id: staffId,
+      travel_distance: null,
+      travel_duration: null,
+    }));
+
+    if (canCalculate) {
+      const calculatedTravel = await calculateTaskTravelData({
+        task,
+        tasks,
+        locations,
+      });
+      supervisorTravel = calculatedTravel.supervisorTravel;
+      staffTravelRecords = calculatedTravel.staffTravelRecords;
+    }
+
+    let nextSupervisorTravel = supervisorTravel;
+    let nextStaffTravelRecords = staffTravelRecords;
+
+    if (task?.staff_id && supervisorOverride) {
+      nextSupervisorTravel = {
+        travel_from: supervisorOverride.travel_from ?? supervisorTravel?.travel_from ?? null,
+        travel_dist: supervisorOverride.travel_dist ?? null,
+        travel_duration: supervisorOverride.travel_duration ?? null,
+      };
+
+      let supervisorRecordUpdated = false;
+      nextStaffTravelRecords = staffTravelRecords.map(record => {
+        if (record.staff_id !== task.staff_id) {
+          return record;
+        }
+
+        supervisorRecordUpdated = true;
+        return {
+          ...record,
+          from_location: nextSupervisorTravel.travel_from ?? record.from_location ?? null,
+          travel_distance: nextSupervisorTravel.travel_dist ?? null,
+          travel_duration: nextSupervisorTravel.travel_duration ?? null,
+        };
+      });
+
+      if (!supervisorRecordUpdated) {
+        nextStaffTravelRecords = [
+          ...nextStaffTravelRecords,
+          {
+            staff_id: task.staff_id,
+            from_location: nextSupervisorTravel.travel_from ?? null,
+            travel_distance: nextSupervisorTravel.travel_dist ?? null,
+            travel_duration: nextSupervisorTravel.travel_duration ?? null,
+          },
+        ];
+      }
+    }
+
+    const nextTask = {
+      ...task,
+      travel_from: nextSupervisorTravel?.travel_from ?? null,
+      travel_dist: nextSupervisorTravel?.travel_dist ?? null,
+      travel_duration: nextSupervisorTravel?.travel_duration ?? null,
+      task_staff_travel: nextStaffTravelRecords,
+    };
+
+    if (updateState) {
+      setTravelInfo({
+        distance_km: nextTask.travel_dist,
+        duration_min: nextTask.travel_duration,
+        from_location: nextTask.travel_from,
+      });
+      setCurrentTask(previousTask => ({
+        ...previousTask,
+        ...nextTask,
+      }));
+      setReportStaffTravelRows(buildReportStaffTravelRows(nextTask, nextStaffTravelRecords));
+    }
+
+    let persistedTask = nextTask;
+
+    if (persistTask && task?.id) {
+      const response = await authFetch(`${VITE_KEY}/api/tasks/${task.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextTask),
+      });
+
+      if (!response.ok) {
+        throw new Error(await getResponseError(response, 'Failed to update task travel details'));
+      }
+
+      const updatedTask = await readJsonOrFallback(response, {});
+      persistedTask = {
+        ...nextTask,
+        ...updatedTask,
+        task_team_members: nextTask.task_team_members || [],
+        task_team_members_name: nextTask.task_team_members_name || [],
+        task_staff_travel: nextStaffTravelRecords,
+      };
+    }
+
+    if (persistStaffTravel && task?.id) {
+      await persistTaskStaffTravel(task.id, nextStaffTravelRecords);
+    }
+
+    return {
+      task: persistedTask,
+      supervisorTravel: nextSupervisorTravel,
+      staffTravelRecords: nextStaffTravelRecords,
+    };
+  }
+
+  async function syncAffectedTaskTravel(impactTasks = [], baseTaskList = tasks, focusedTaskId = null) {
+    let workingTasks = baseTaskList.map(task => ({ ...task }));
+
+    impactTasks.forEach(task => {
+      if (task?.id) {
+        workingTasks = replaceTaskInList(workingTasks, task);
+      }
+    });
+
+    const affectedTasks = workingTasks
+      .filter(candidate => impactTasks.some(impactTask => {
+        if (!candidate?.id || !impactTask?.id) {
+          return false;
+        }
+
+        if (candidate.id === impactTask.id) {
+          return true;
+        }
+
+        if (getTaskDayKey(candidate) !== getTaskDayKey(impactTask)) {
+          return false;
+        }
+
+        return tasksShareAssignedStaff(candidate, impactTask);
+      }))
+      .sort((firstTask, secondTask) => {
+        const firstStart = firstTask?.start_time ? dayjs(firstTask.start_time).valueOf() : 0;
+        const secondStart = secondTask?.start_time ? dayjs(secondTask.start_time).valueOf() : 0;
+        return firstStart - secondStart;
+      });
+
+    let focusedTaskResult = null;
+
+    for (const task of affectedTasks) {
+      const syncedTask = await syncTaskTravelDetails(task, {
+        persistTask: true,
+        persistStaffTravel: true,
+        updateState: task.id === focusedTaskId,
+      });
+      workingTasks = replaceTaskInList(workingTasks, syncedTask.task);
+      if (task.id === focusedTaskId) {
+        focusedTaskResult = syncedTask.task;
+      }
+    }
+
+    return {
+      tasks: workingTasks,
+      focusedTask: focusedTaskResult,
+    };
+  }
+
   async function computeAndSaveTravelDistance(task, isBtnClick, options = {}) {
     const { skipSave = false } = options;
-    if (
-      !task 
-      || !task.staff_id 
-      || !task.start_time 
-      || !task.location_id 
-      || (!isBtnClick && (task.travel_dist || task.travel_duration))) {
+    if (!task || !task.staff_id || !task.start_time || !task.location_id) {
       if (isBtnClick) {
         showToast('Please make sure location, staff and start time are configured for this task.');
       }
-      return;
-    }
-  
-    const taskStart = dayjs(task.start_time);
-    let prev = null;
-
-    for (const candidate of tasks) {
-      if (!candidate?.start_time || candidate.id === task.id) continue;
-      const isAssignedToStaff =
-        candidate.staff_id === task.staff_id ||
-        candidate.task_team_members?.indexOf(task.staff_id) !== -1;
-
-      if (!isAssignedToStaff) continue;
-
-      const candidateStart = dayjs(candidate.start_time);
-      if (!candidateStart.isSame(taskStart, 'day') || !candidateStart.isBefore(taskStart)) {
-        continue;
-      }
-
-      if (!prev || candidateStart.isAfter(dayjs(prev.start_time))) {
-        prev = candidate;
-      }
-    }
-
-    if (!prev) {
-      if (isBtnClick) {
-        alert('No previous shift found on the same day');
-      }
       return null;
     }
-  
-    if (!prev.location_id) { 
-      if (isBtnClick) {
-        alert('No location found for previous shift'); 
-      }
-      return null; 
-    }
 
-    const fromLoc = locations.find(l => l.id === prev.location_id);
-    const toLoc = locations.find(l => l.id === task.location_id);
-    if (!fromLoc || !toLoc || !fromLoc.lat || !fromLoc.lng || !toLoc.lat || !toLoc.lng) {
-      if (isBtnClick) {  
-        alert('Location coordinates missing');
-      }
-      return null;
-    }
-  
     try {
-      await loadGoogleMapsApi(GOOGLE_MAPS_API_KEY);
-      const directionsService = new window.google.maps.DirectionsService();
-      const resp = await new Promise((resolve, reject) => {
-        directionsService.route({
-          origin: { lat: Number(fromLoc.lat), lng: Number(fromLoc.lng) },
-          destination: { lat: Number(toLoc.lat), lng: Number(toLoc.lng) },
-          travelMode: 'DRIVING'
-        }, (result, status) => {
-          if (status === 'OK') resolve(result);
-          else reject(status);
-        });
+      const { task: updatedTask, supervisorTravel, staffTravelRecords } = await syncTaskTravelDetails(task, {
+        persistTask: !skipSave,
+        persistStaffTravel: !skipSave,
+        updateState: true,
       });
-  
-      const leg = resp.routes[0]?.legs[0];
-      if (!leg?.distance?.value || !leg?.duration?.value) {
-        return null;
+
+      if (!supervisorTravel && isBtnClick) {
+        showToast('No previous shift found on the same day for the assigned supervisor.', '#0f172a');
       }
 
-      const travel = {
-        from_location: prev.location_id,
-        travel_from: prev.location_id,
-        travel_dist: (leg.distance.value / 1000).toFixed(2),
-        travel_duration: Math.round(leg.duration.value / 60)
+      return {
+        travel_from: supervisorTravel?.travel_from ?? null,
+        travel_dist: supervisorTravel?.travel_dist ?? null,
+        travel_duration: supervisorTravel?.travel_duration ?? null,
+        from_location: supervisorTravel?.travel_from ?? null,
+        staffTravelRecords,
+        task: updatedTask,
       };
-  
-      setTravelInfo({ distance_km: travel.travel_dist, duration_min: travel.travel_duration, from_location: travel.from_location });
-      setCurrentTask((prevTask) => ({
-        ...prevTask,
-        travel_from: travel.travel_from,
-        travel_dist: travel.travel_dist,
-        travel_duration: travel.travel_duration
-      }));
-
-      if (!skipSave) {
-      await authFetch(`${VITE_KEY}/api/tasks/${task.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...task, travel_from: travel.travel_from, travel_dist: travel.travel_dist, travel_duration: travel.travel_duration })
-      });
-      }
-
-      return travel;
     } catch (e) {
       console.error('Auto travel compute failed:', e);
-      showToast(typeof arguments[1] === 'string' ? arguments[1] : (arguments[0]?.message || 'Error occurred'));
+      showToast(e.message || 'Error occurred');
       return null;
     }
   }
@@ -558,10 +1037,23 @@ export default function CalendarView({
         ? Number(t.payment_amount)
         : 0;
 
+      const clientName = t.client_name || clients.find(c => c.id === t.client_id)?.client_name || '';
+      let title = `${t.task_name || ''}${clientName ? ` ${clientName}` : ''}${staffName ? ` - ${staffName} (S) ` : ''}`;
+  
+        if (t.task_team_members_name?.length > 0) {
+          t.task_team_members_name.forEach((staffName) => {
+            title += staffName;
+            title += ', ';
+          });
+  
+          title = title.slice(0, -2);
+        }
+
+
       byStaff.get(staffId).rows.push({
         task_id: t.id,
         date: t.start_time,
-        shift_name: t.task_name,
+        shift_name: title,
         sched_min: schedMinutes,
         log_min: logMinutes,
         payment_type: t.payment_type || '',
@@ -747,7 +1239,16 @@ export default function CalendarView({
       const staffName = staffs.find(s => s.id === t.staff_id)?.name || t.staff_name || '';
       const when = t.start_time ? dayjs(t.start_time).format('YYYY-MM-DD hh:mm a') : '';
       const title = `${t.task_name || 'Shift'}${clientName ? ` • ${clientName}` : ''}`;
-      const subtitle = `${when}${staffName ? ` • ${staffName}` : ''}`;
+      let subtitle = `${when}${staffName ? ` • ${staffName} (S) ` : ''}`;
+
+      if (t.task_team_members_name?.length > 0) {
+        t.task_team_members_name.forEach((staffName) => {
+          subtitle += staffName;
+          subtitle += ', ';
+        });
+
+        subtitle = subtitle.slice(0, -2);
+      }
 
       return (
         <div style={{ padding: '10px 12px', background: '#e0f2fe', fontStyle: 'italic' }}>
@@ -1139,6 +1640,10 @@ export default function CalendarView({
         body: JSON.stringify(payload),
       });
       const created = await res.json();
+
+      if (created?.id) {
+        await persistTaskStaffTravel(created.id, travel?.staffTravelRecords || []);
+      }
   
       // Fetch enriched task (joins staff, client, location, team)
       const fullRes = await authFetch(`${VITE_KEY}/api/tasks/${created.id}`);
@@ -1185,7 +1690,6 @@ export default function CalendarView({
 
       // Close and open edit modal
       setCreateModalOpen(false);
-      computeAndSaveTravelDistance(fullTask);
     } catch (e) {
       console.error('Create task error', e);
       showToast(typeof arguments[1] === 'string' ? arguments[1] : (arguments[0]?.message || 'Error occurred'));
@@ -1823,6 +2327,12 @@ export default function CalendarView({
     setTaskModalMainTab('Shift Detail');
     setTaskModalEditTab('Shift');
     setShowInlineTaskMap(false);
+    setReportStaffTravelRows([]);
+    setReportStaffTravelLoading(false);
+    setReportStaffTravelSaving(false);
+    setReportStaffTravelError('');
+    setReportTravelCalculating(false);
+    setReportStaffTravelLoadedTaskId(null);
 
     
     setEditInstructionInput('');
@@ -1879,7 +2389,13 @@ export default function CalendarView({
 
   function closeEditTaskModal() {
     setEditModalOpen(false);
-    // refreshTasksForCurrentMonth().catch((err) => {
+    setReportStaffTravelRows([]);
+    setReportStaffTravelLoading(false);
+    setReportStaffTravelSaving(false);
+    setReportStaffTravelError('');
+    setReportTravelCalculating(false);
+    setReportStaffTravelLoadedTaskId(null);
+    // refreshTasksForCurrentRange().catch((err) => {
     //   console.error('Error Occurred in closeEditTaskModal', err);
     //   showToast(typeof arguments[1] === 'string' ? arguments[1] : (arguments[0]?.message || 'Error occurred'));
     // });
@@ -1890,6 +2406,8 @@ export default function CalendarView({
       return null;
     }
 
+    const reportTravelBusy = reportTravelCalculating || reportStaffTravelLoading || reportStaffTravelSaving;
+
 
     // Helper function for updating shift fields
     function handleShiftUpdate(changes) {
@@ -1898,50 +2416,44 @@ export default function CalendarView({
       
     }
 
-    function handleSaveShiftModal() {
-      // debugger;
+    async function handleSaveShiftModal() {
       setManageLoading(true);
-      authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(currentTask),
-      }).then(res => {
-        // debugger;
-        setManageLoading(false);
-        computeAndSaveTravelDistance(currentTask);
-        setEditModalOpen(false);
-
-        refreshTasksForCurrentMonth().catch((err) => {
-          console.error('Error Occurred in closeEditTaskModal', err);
-          showToast(typeof arguments[1] === 'string' ? arguments[1] : (arguments[0]?.message || 'Error occurred'));
+      try {
+        const response = await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(currentTask),
         });
 
-        // TODO: Update event extra props
-        // const calApi = calendarRef.current.getApi();
+        if (!response.ok) {
+          throw new Error(await getResponseError(response, 'Failed to update shift'));
+        }
 
-        // // Get the event by ID
-        // const selectedEvent = calApi.getEventById(currentTask.id);
+        const updatedTask = await readJsonOrFallback(response, {});
+        const mergedTask = {
+          ...currentTask,
+          ...updatedTask,
+          task_team_members: currentTask.task_team_members || [],
+          task_team_members_name: currentTask.task_team_members_name || [],
+        };
+        const previousTask = tasks.find(task => task.id === currentTask.id) || currentTask;
+        const syncedTravel = await syncAffectedTaskTravel([previousTask, mergedTask], tasks, currentTask.id);
 
-        // if (selectedEvent) {
-        //   if (currentTask.title) selectedEvent.setProp('title', currentTask.title);
-        //   if (currentTask.start) selectedEvent.setStart(currentTask.start);
-        //   if (currentTask.end) selectedEvent.setEnd(currentTask.end);
+        if (syncedTravel.focusedTask) {
+          setCurrentTask(syncedTravel.focusedTask);
+        }
+        setEditModalOpen(false);
 
-        //   // Update custom properties
-        //   // if (currentTask.staff_id) selectedEvent.setExtendedProp('staff_id', currentTask.staff_id);
-
-        //   for (let currentTaskKey in currentTask) {
-        //     selectedEvent.setExtendedProp(currentTaskKey, currentTask[currentTaskKey]);
-        //   }
-
-        //   if (currentTask.backgroundColor) selectedEvent.setProp('backgroundColor', currentTask.backgroundColor);
-        // }
-
-      }).catch(err => {
-        console.error('Update shift error', err)
+        refreshTasksForCurrentRange().catch((err) => {
+          console.error('Error Occurred in closeEditTaskModal', err);
+          showToast(err.message || 'Error occurred');
+        });
+      } catch (err) {
+        console.error('Update shift error', err);
+        setEditModalOpen(false);
+      } finally {
         setManageLoading(false);
-        setEditModalOpen(false)
-      });
+      }
     }
 
     // Instructions Handlers
@@ -2840,63 +3352,8 @@ export default function CalendarView({
                       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
                         <div style={{fontWeight:600}}>Travel Distance</div>
                         <div style={{display:'flex', gap:8}}>
-                          <button className="btn" disabled={manageLoading} onClick={async () => {
-                            setManageLoading(true);
-                            await computeAndSaveTravelDistance(currentTask, true)
-                            setManageLoading(false);
-                          }
-                          // async ()=>{
-                          //   // compute travel info by finding previous task for same supervisor on same day
-                          //   if (!currentTask || !currentTask.staff_id || !currentTask.start_time) return;
-                          //   // find tasks in-state (we have `tasks` state)
-                          //   const sameDay = tasks.filter(t => t.staff_id === currentTask.staff_id && t.start_time && dayjs(t.start_time).isSame(dayjs(currentTask.start_time), 'day') && t.id !== currentTask.id);
-                          //   if (sameDay.length === 0) { alert('No previous shift found on the same day'); return; }
-                          //   // pick the latest one before current task
-                          //   const prev = sameDay.sort((a,b)=> new Date(b.start_time) - new Date(a.start_time))[0];
-                          //   if (!prev || !prev.location_id) { alert('No location found for previous shift'); return; }
-
-                          //   const fromLoc = locations.find(l => l.id === prev.location_id);
-                          //   const toLoc = locations.find(l => l.id === currentTask.location_id);
-                          //   if (!fromLoc || !toLoc || !fromLoc.lat || !toLoc.lat) { alert('Location coordinates missing'); return; }
-
-                          //   try {
-                          //     await loadGoogleMapsApi(GOOGLE_MAPS_API_KEY);
-                          //     const directionsService = new window.google.maps.DirectionsService();
-                          //     const resp = await new Promise((resolve, reject) => {
-                          //       directionsService.route({
-                          //         origin: {lat: Number(fromLoc.lat), lng: Number(fromLoc.lng)},
-                          //         destination: {lat: Number(toLoc.lat), lng: Number(toLoc.lng)},
-                          //         travelMode: 'DRIVING'
-                          //       }, (result, status) => {
-                          //         if (status === 'OK') resolve(result);
-                          //         else reject(status);
-                          //       });
-                          //     });
-
-                          //     const route = resp.routes[0];
-                          //     const leg = route.legs[0];
-                          //     const distMeters = leg.distance.value;
-                          //     const durSec = leg.duration.value;
-                          //     const distKm = (distMeters/1000).toFixed(2);
-                          //     const durMin = Math.round(durSec/60);
-
-                          //     setTravelInfo({ distance_km: distKm, duration_min: durMin, from_location: prev.location_id });
-
-                          //     // persist to backend
-                          //     await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
-                          //       method:'PUT', headers:{'Content-Type':'application/json'},
-                          //       body: JSON.stringify({ ...currentTask, travel_from: prev.location_id, travel_dist: Number(distKm), travel_duration: Number(durMin) })
-                          //     });
-
-                          //   } catch(e) {
-                          //     console.error('Directions error', e);
-                          //     alert('Could not compute route: '+String(e));
-                          //   }
-
-                          // }
-                          
-                          }>🔄 Calculate</button>
-                          <button className="btn" onClick={()=>{
+                          <button className="btn" disabled={reportTravelBusy} onClick={handleCalculateReportStaffTravel}>🔄 Calculate</button>
+                          <button className="btn" disabled={reportTravelBusy} onClick={()=>{
                             setTravelInfo({ distance_km: null, duration_min: null, from_location: null });
                           }}>Reset</button>
                         </div>
@@ -2926,33 +3383,127 @@ export default function CalendarView({
                         </div>
                         <button
                           className="btn primary"
-                          disabled={manageLoading}
+                          disabled={reportTravelBusy}
                           onClick={async ()=>{
                             try {
-                              setManageLoading(true);
-                              const payload = {
-                                ...currentTask,
-                                travel_dist: currentTask.travel_dist === '' ? null : Number(currentTask.travel_dist),
-                                travel_duration: currentTask.travel_duration === '' ? null : Number(currentTask.travel_duration)
-                              };
-                              const res = await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
-                                method: 'PUT',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(payload)
+                              setReportStaffTravelSaving(true);
+                              setReportStaffTravelError('');
+                              const syncedTravel = await syncTaskTravelDetails(currentTask, {
+                                persistTask: true,
+                                persistStaffTravel: true,
+                                updateState: true,
+                                supervisorOverride: {
+                                  travel_from: currentTask.travel_from || null,
+                                  travel_dist: currentTask.travel_dist === '' ? null : Number(currentTask.travel_dist),
+                                  travel_duration: currentTask.travel_duration === '' ? null : Number(currentTask.travel_duration),
+                                },
                               });
-                              const updated = await res.json();
-                              setCurrentTask(updated);
+                              setCurrentTask(syncedTravel.task);
+                              setReportStaffTravelRows(buildReportStaffTravelRows(syncedTravel.task, syncedTravel.staffTravelRecords));
+                              setReportStaffTravelLoadedTaskId(currentTask.id);
                               showToast('Travel details updated', '#16a34a');
                             } catch (e) {
                               console.error('travel update error', e);
                               showToast('Failed to update travel details');
                             } finally {
-                              setManageLoading(false);
+                              setReportStaffTravelSaving(false);
                             }
                           }}
                         >
                           Save Travel
                         </button>
+                      </div>
+
+                      <div style={{marginTop:16, paddingTop:14, borderTop:'1px solid #eef2f7'}}>
+                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap'}}>
+                          <div>
+                            <div style={{fontWeight:600}}>Staff Travel</div>
+                            <div style={{fontSize:12, color:'#6b7280'}}>
+                              Loads only in the Report tab and updates `task_staff_travel` for this task.
+                            </div>
+                          </div>
+                          <div style={{display:'flex', gap:8, alignItems:'center'}}>
+                            {reportStaffTravelLoading && (
+                              <span style={{fontSize:12, color:'#6b7280'}}>Loading staff travel...</span>
+                            )}
+                            {!reportStaffTravelLoading && reportStaffTravelSaving && (
+                              <span style={{fontSize:12, color:'#6b7280'}}>Saving staff travel...</span>
+                            )}
+                            <button
+                              className="btn"
+                              disabled={reportTravelBusy}
+                              onClick={() => loadReportStaffTravel(currentTask, { force: true })}
+                            >
+                              Refresh
+                            </button>
+                            <button
+                              className="btn primary"
+                              disabled={reportTravelBusy || reportStaffTravelRows.length === 0}
+                              onClick={handleSaveReportStaffTravel}
+                            >
+                              Save Staff Travel
+                            </button>
+                          </div>
+                        </div>
+
+                        {reportStaffTravelError && (
+                          <div style={{marginTop:10, padding:'8px 10px', borderRadius:6, background:'#fef2f2', border:'1px solid #fecaca', color:'#b91c1c', fontSize:12}}>
+                            {reportStaffTravelError}
+                          </div>
+                        )}
+
+                        {!reportStaffTravelLoading && reportStaffTravelRows.length === 0 && (
+                          <div style={{marginTop:12, fontSize:13, color:'#6b7280'}}>
+                            No assigned staff travel rows found for this task.
+                          </div>
+                        )}
+
+                        {reportStaffTravelRows.length > 0 && (
+                          <div style={{marginTop:12, overflowX:'auto'}}>
+                            <table style={{width:'100%', borderCollapse:'collapse', minWidth:540}}>
+                              <thead>
+                                <tr style={{background:'#f8fafc'}}>
+                                  <th style={{padding:'10px 12px', textAlign:'left', fontSize:12, color:'#475569'}}>Staff</th>
+                                  <th style={{padding:'10px 12px', textAlign:'left', fontSize:12, color:'#475569'}}>Role</th>
+                                  <th style={{padding:'10px 12px', textAlign:'left', fontSize:12, color:'#475569'}}>Distance (km)</th>
+                                  <th style={{padding:'10px 12px', textAlign:'left', fontSize:12, color:'#475569'}}>Duration (min)</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {reportStaffTravelRows.map(row => (
+                                  <tr key={row.staff_id} style={{borderTop:'1px solid #e5e7eb'}}>
+                                    <td style={{padding:'10px 12px', color:'#111827'}}>
+                                      <div style={{fontWeight:600}}>{row.staff_name}</div>
+                                    </td>
+                                    <td style={{padding:'10px 12px', color:'#64748b', fontSize:13}}>{row.role_label}</td>
+                                    <td style={{padding:'10px 12px'}}>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        value={row.travel_distance ?? ''}
+                                        disabled={reportTravelBusy}
+                                        onChange={(e) => handleReportStaffTravelFieldChange(row.staff_id, 'travel_distance', e.target.value)}
+                                        style={{width:'100%'}}
+                                      />
+                                    </td>
+                                    <td style={{padding:'10px 12px'}}>
+                                      <input
+                                        type="number"
+                                        step="1"
+                                        min="0"
+                                        value={row.travel_duration ?? ''}
+                                        disabled={reportTravelBusy}
+                                        onChange={(e) => handleReportStaffTravelFieldChange(row.staff_id, 'travel_duration', e.target.value)}
+                                        style={{width:'100%'}}
+                                      />
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -3130,13 +3681,26 @@ export default function CalendarView({
                   if (!confirm('Cancel this task and assign it to Cover?')) return;
 
                   try {
+                    const previousTask = tasks.find(task => task.id === currentTask.id) || currentTask;
                     await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}/assign-to-cover`, {
                       method: 'POST'
                     });
+                    const coveredTask = {
+                      ...currentTask,
+                      assignment_type: 'cover',
+                      staff_id: 'STATIC-COVER-STAFF',
+                      team_id: null,
+                      task_team_members: [],
+                      task_team_members_name: [],
+                      travel_from: null,
+                      travel_dist: null,
+                      travel_duration: null,
+                    };
+                    await syncAffectedTaskTravel([previousTask, coveredTask], tasks, currentTask.id);
 
                     showToast('Task cancelled and assigned to Cover', '#16a34a');
                     setEditModalOpen(false);
-                    // refreshCalendar();
+                    refreshTasksForCurrentRange().catch(() => {});
                   } catch (e) {
                     console.error(e);
                     showToast('Failed to cancel task');
@@ -3526,7 +4090,7 @@ export default function CalendarView({
                       return;
                     }
 
-                    const res = await authFetch(`${VITE_KEY}/api/tasks/publish`, {
+                    const res = await authFetch(`${VITE_KEY}/api/publishtasks`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ taskIds })
@@ -3542,7 +4106,7 @@ export default function CalendarView({
                     showToast(`Published ${updatedCount} task(s).`, '#16a34a');
 
                     // Reload tasks so calendar reflects new publish state
-                    refreshTasksForCurrentMonth().catch(() => {});
+                    refreshTasksForCurrentRange().catch(() => {});
                   } catch (e) {
                     console.error(e);
                     showToast(e.message || 'Failed to publish tasks');
@@ -3581,17 +4145,9 @@ export default function CalendarView({
                 return { start: arg.start, end: arg.end };
               });
 
-              if (newView === 'dayGridMonth') {
-                const monthKey = dayjs(arg.start).startOf('month').format('YYYY-MM');
-                const fetchKey = `${monthKey}`;
-                debugger;
-                if (lastFetchedMonthKeyRef.current !== fetchKey) {
-                  fetchTasksForMonth(arg.start);
-                  lastFetchedMonthKeyRef.current = fetchKey;
-                }
-              } else {
-                fetchTasksForMonth(arg.start);
-              }
+              fetchTasksForVisibleRange(arg.start, arg.end).catch((err) => {
+                console.error('Failed to fetch tasks for visible range', err);
+              });
             }}
             hiddenDays={currentView === 'timeGridWeek' ? (filter.hiddenDays || []) : []}
             ref={calendarRef}

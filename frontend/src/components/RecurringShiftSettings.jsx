@@ -31,9 +31,11 @@ export default function RecurringShiftSettings({ task }) {
 
   // Dropdown state for recurring pattern actions
   const [selectedPatternAction, setSelectedPatternAction] = useState("");
+  const [pendingPatternAction, setPendingPatternAction] = useState("");
+  const [changeFromDate, setChangeFromDate] = useState(dayjs().format("YYYY-MM-DD"));
+  const [changeFromDateModalOpen, setChangeFromDateModalOpen] = useState(false);
 
-  // Cutover date (inclusive) for applying updates to generated recurring tasks.
-  // Default: the currently focused task's start date.
+// Cutover date (inclusive) for applying updates to generated recurring tasks.
   const changeFromDateIso = (() => {
     const dt = task?.start_time || task?.start_date;
     return dt ? dayjs(dt).startOf("day").toISOString() : dayjs().startOf("day").toISOString();
@@ -134,6 +136,129 @@ export default function RecurringShiftSettings({ task }) {
     setSelectedTeam({});
     setSupervisorId(null);
     setTeamManageCleaners([]);
+    setSelectedPatternAction("");
+  }
+
+  function closeChangeFromDateModal() {
+    setChangeFromDateModalOpen(false);
+    setPendingPatternAction("");
+    setSelectedPatternAction("");
+  }
+
+  async function handleDeleteRecurringPatterns() {
+    try {
+      setLoading(true);
+
+      const responses = await Promise.all(
+        selectedRecurringIds.map((rid) =>
+          authFetch(`${VITE_KEY}/api/recurring_setting/${rid}`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ date: changeFromDateIso })
+          })
+        )
+      );
+
+      for (const response of responses) {
+        if (!response.ok) {
+          throw new Error("Failed to delete recurring shift.");
+        }
+      }
+
+      window.showToast?.("Recurring pattern deleted successfully.");
+      setSelectedRecurringIds([]);
+      await loadRecurring();
+    } catch (e) {
+      console.error("Failed to delete recurring shift.", e);
+      window.showToast?.("Failed to delete recurring shift.");
+    } finally {
+      setLoading(false);
+      setPendingPatternAction("");
+      setSelectedPatternAction("");
+      setChangeFromDateModalOpen(false);
+    }
+  }
+
+  function continueRecurringPatternAction() {
+    const action = pendingPatternAction;
+
+    setChangeFromDateModalOpen(false);
+    setPendingPatternAction("");
+
+    if (action === "drop") {
+      handleDeleteRecurringPatterns();
+      return;
+    }
+
+    if (action === "team_staff") {
+      if (task.assignment_type === 'team' && task.team_id) {
+        teams.every(team => {
+          if (task.team_id === team.id) {
+            setSelectedTeam({ ...team, supervisor_id: task.staff_id });
+            setSupervisorId(task.staff_id);
+            setTeamManageCleaners(task.task_team_members);
+            return false;
+          }
+
+          return true;
+        });
+      }
+      setEditTaskStaffModalOpen(true);
+      return;
+    }
+
+    if (action === "location") {
+      openLocationSelectionModal();
+      return;
+    }
+
+    if (action === "individual_staff") {
+      openManageStaffModal();
+      return;
+    }
+
+    if (action === "client") {
+      openClientModal();
+      return;
+    }
+
+    if (action === "time") {
+      setNewStartTime(task?.start_time ? dayjs(task.start_time).format('HH:mm') : '');
+      setNewEndTime(task?.end_time ? dayjs(task.end_time).format('HH:mm') : '');
+      setTimeLengthModalOpen(true);
+    }
+  }
+
+  function ChangeFromDateModal() {
+    if (!changeFromDateModalOpen) return null;
+
+    return (
+      <Modal
+        open={changeFromDateModalOpen}
+        title="Apply Repeat Change"
+        onClose={closeChangeFromDateModal}
+      >
+        <div style={{ minWidth: 320, display: "flex", flexDirection: "column", gap: 12 }}>
+          <label>
+            <strong>From Date</strong>
+            <input
+              type="date"
+              value={changeFromDate}
+              onChange={(e) => setChangeFromDate(e.target.value)}
+              style={{ width: "100%", marginTop: 6 }}
+            />
+          </label>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button className="btn" onClick={closeChangeFromDateModal} disabled={loading}>
+              Cancel
+            </button>
+            <button className="btn primary" onClick={continueRecurringPatternAction} disabled={!changeFromDate || loading}>
+              Continue
+            </button>
+          </div>
+        </div>
+      </Modal>
+    );
   }
 
   // --- TEAM SELECTION MODAL ---
@@ -154,7 +279,7 @@ export default function RecurringShiftSettings({ task }) {
 
         await Promise.all(
           selectedRecurringIds.map((rid) =>
-            authFetch(`${VITE_KEY}api/recurring_setting/${rid}/tasks`, {
+            authFetch(`${VITE_KEY}/api/recurring_setting/${rid}/tasks`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -306,6 +431,7 @@ export default function RecurringShiftSettings({ task }) {
     setManageStaffModalOpen(false);
     setManageStaffModalSupervisor(null);
     setManageStaffModalCleaners([]);
+    setSelectedPatternAction("");
   }
 
   // --- Staff Selection Modal ---
@@ -439,7 +565,6 @@ export default function RecurringShiftSettings({ task }) {
             setLocationMapLoaded(true)
           })
           .catch((err) => {
-            debugger;;
             console.error('error while loading map', err);
           });
       }
@@ -505,7 +630,6 @@ export default function RecurringShiftSettings({ task }) {
           }
         })
       } catch (err){
-        debugger;
         console.error('Text search errored:', err);
 
       }
@@ -629,7 +753,10 @@ export default function RecurringShiftSettings({ task }) {
     // }
 
     return (
-      <Modal open={locationModalOpen} title="Select Location" onClose={()=>setLocationModalOpen(false)}>
+      <Modal open={locationModalOpen} title="Select Location" onClose={() => {
+        setLocationModalOpen(false);
+        setSelectedPatternAction("");
+      }}>
         <div style={{display:'flex', flexDirection:'column', gap:10, minWidth:400}}>
           <div>
             <input
@@ -731,7 +858,10 @@ export default function RecurringShiftSettings({ task }) {
             </div>
           </div>
           <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
-            <button className="btn" onClick={()=>setLocationModalOpen(false)}>Cancel</button>
+            <button className="btn" onClick={() => {
+              setLocationModalOpen(false);
+              setSelectedPatternAction("");
+            }}>Cancel</button>
             <button className="btn primary" onClick={handleAddLocation} disabled={!selectedLocationPlace}>Add Location</button>
           </div>
         </div>
@@ -824,7 +954,10 @@ export default function RecurringShiftSettings({ task }) {
       <Modal
         open={clientModalOpen}
         title="Update Client Details"
-        onClose={() => setClientModalOpen(false)}
+        onClose={() => {
+          setClientModalOpen(false);
+          setSelectedPatternAction("");
+        }}
       >
         
         <div style={{display:'flex', flexDirection:'column', gap:20}}>
@@ -981,7 +1114,10 @@ export default function RecurringShiftSettings({ task }) {
           </div>
           {/* Actions */}
           <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
-            <button className="btn" onClick={() => setClientModalOpen(false)}>
+            <button className="btn" onClick={() => {
+              setClientModalOpen(false);
+              setSelectedPatternAction("");
+            }}>
               Cancel
             </button>
             <button className="btn primary" onClick={handleSaveClient}>
@@ -996,13 +1132,15 @@ export default function RecurringShiftSettings({ task }) {
   // Time Length Modal Update
   function TimeLengthModal() {
     if (!timeLengthModalOpen) return null;
-  
-    debugger;
+
     return (
       <Modal
         open={timeLengthModalOpen}
         title={"Update Task Time (Time Only)"}
-        onClose={() => setTimeLengthModalOpen(false)}
+        onClose={() => {
+          setTimeLengthModalOpen(false);
+          setSelectedPatternAction("");
+        }}
       >
         <div style={{ minWidth: 360, display: "flex", flexDirection: "column", gap: 12 }}>
           <label>
@@ -1026,7 +1164,10 @@ export default function RecurringShiftSettings({ task }) {
           </label>
   
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-            <button className="btn" onClick={() => setTimeLengthModalOpen(false)}>
+            <button className="btn" onClick={() => {
+              setTimeLengthModalOpen(false);
+              setSelectedPatternAction("");
+            }}>
               Cancel
             </button>
             <button
@@ -1045,8 +1186,6 @@ export default function RecurringShiftSettings({ task }) {
   async function handleSaveTimeLengthUpdate() {
     try {
       setLoading(true);
-
-      debugger;
   
       await Promise.all(
         selectedRecurringIds.map(rid =>
@@ -1081,7 +1220,6 @@ export default function RecurringShiftSettings({ task }) {
 
   
   async function loadRecurring() {
-    debugger;
     if (!task?.id) return;
     try {
       const res = await authFetch(`${VITE_KEY}/api/recurring/${task.id}`);
@@ -1152,8 +1290,6 @@ export default function RecurringShiftSettings({ task }) {
     }
 
     setLoading(true);
-
-    debugger;
 
     await authFetch(`${VITE_KEY}/api/tasks/${task.id}/recurring`, {
       method: 'POST',
@@ -1331,79 +1467,14 @@ export default function RecurringShiftSettings({ task }) {
                 const action = e.target.value;
 
                 setSelectedPatternAction(action);
-
-                if (action === "drop") {
-                  setLoading(true);
-
-                  Promise.all(
-                    selectedRecurringIds.map((rid) =>
-                      authFetch(`${VITE_KEY}/api/recurring_setting/${rid}`, {
-                        method: "DELETE"
-                      })
-                    )
-                  )
-                    .then(async (resps) => {
-                      if (!resps || resps.length === 0) {
-                        throw 'Failed to fetch delete response';
-                      }
-
-                      let failedRespBody = [];
-                      for (let resp of resps) {
-                        let respJson = await resp.json();
-                        if (!resp.ok) {
-                          failedRespBody.push(respJson);
-                        } else {
-                          console.log('Recurring setting deleted', respJson);
-                        }
-                      }
-
-                      if (window.showToast) {
-                        window.showToast("Recurring pattern deleted successfully.");
-                      }
-                      // Reload list
-                      await loadRecurring();
-                      setSelectedRecurringIds([]);
-                    })
-                    .catch((err) => {
-                      debugger;
-                      if (window.showToast) {
-                        window.showToast("Failed to delete recurring shift.");
-                      }
-                    })
-                    .finally(() => {
-                      setLoading(false);
-                      setSelectedPatternAction("");
-                    });
-                } else if (action === "team_staff") {
-
-                  if (task.assignment_type === 'team' && task.team_id) {
-                    teams.every(team => {
-                      if (task.team_id === team.id) {
-                        setSelectedTeam({ ...team, supervisor_id: task.staff_id });
-                        setSupervisorId(task.staff_id);
-                        setTeamManageCleaners(task.task_team_members);
-                        return false;
-                      }
-              
-                      return true;
-                    });
-                    // useEffect(() => {
-                    // })
-              
-                  }
-                  setEditTaskStaffModalOpen(true);
-
-                } else if (action === "location") {
-                  openLocationSelectionModal();
-                } else if (action === "individual_staff") {
-                  openManageStaffModal();
-                } else if (action === 'client') {
-                  openClientModal();
-                } else if (action === 'time') {
-                  setNewStartTime(task?.start_time ? dayjs(task.start_time).format('HH:mm') : '');
-                  setNewEndTime(task?.end_time ? dayjs(task.end_time).format('HH:mm') : '');
-                  setTimeLengthModalOpen(true);
+                if (!action) {
+                  setPendingPatternAction("");
+                  return;
                 }
+
+                setPendingPatternAction(action);
+                setChangeFromDate(dayjs().format("YYYY-MM-DD"));
+                setChangeFromDateModalOpen(true);
               }}
 
               style={{
@@ -1509,6 +1580,7 @@ export default function RecurringShiftSettings({ task }) {
         </div>
       )}
 
+    <ChangeFromDateModal />
     {TeamSelectionModal()}
     {ManageStaffModal()}
     {LocationSelectionModal()}

@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs'
 import { SignJWT } from 'jose'
 
 import { jwtVerify } from 'jose'
+import dayjs from 'dayjs';
 
 const uuidv4 = () => crypto.randomUUID();
 const homemaidLogo = 'https://pub-ac8edfc52ef04beba837f1804a4abf42.r2.dev/public/homemaid_logo.png';
@@ -1075,7 +1076,6 @@ app.post('/api/tasks', authMiddleware, async context => {
 		}
 
 		let row = await getSql(context.env.DB, 'SELECT * FROM tasks WHERE id=?', [id]);
-		
 
 		return context.json(row);
 	} catch (e) {
@@ -1150,9 +1150,40 @@ app.put('/api/tasks/:id', authMiddleware, async context => {
 	}
 });
 
+app.post('/api/publishtasks', authMiddleware, async context => {
+	try {
+		const body = await context.req.json();
+		const taskIds = Array.isArray(body?.taskIds)
+			? [...new Set(body.taskIds.map(id => `${id}`.trim()).filter(Boolean))]
+			: [];
+
+		if (taskIds.length === 0) {
+			return context.json({ error: 'taskIds array is required' }, 400);
+		}
+
+		const placeholders = taskIds.map(() => '?').join(', ');
+		const updateResult = await runSql(
+			context.env.DB,
+			`UPDATE tasks
+			 SET publish = 1
+			 WHERE id IN (${placeholders})
+			   AND COALESCE(publish, 0) != 1`,
+			taskIds
+		);
+
+		return context.json({
+			ok: true,
+			updated: updateResult?.meta?.changes ?? taskIds.length
+		});
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
 
 app.delete('/api/tasks/:id', authMiddleware, async context => {
 	try {
+		await runSql(context.env.DB, 'DELETE FROM task_staff_travel WHERE task_id=?', [context.req.param().id]);
 		await runSql(context.env.DB, 'DELETE FROM task_team_members WHERE task_id=?', [context.req.param().id]);
 		await runSql(context.env.DB, 'DELETE FROM tasks WHERE id=?', [context.req.param().id]);
 		return context.json({ ok: true });
@@ -1185,7 +1216,7 @@ app.post('/api/tasks/:id/assign-to-cover', authMiddleware, async context => {
 		await runSql(
 			context.env.DB,
 			`UPDATE tasks
-			SET staff_id = ?, team_id = NULL, assignment_type = 'staff'
+			SET staff_id = ?, team_id = NULL, assignment_type = 'staff', travel_from = NULL, travel_dist = NULL, travel_duration = NULL
 			WHERE id = ?`,
 			[coverStaff.id, taskId]
 		);
@@ -1194,6 +1225,12 @@ app.post('/api/tasks/:id/assign-to-cover', authMiddleware, async context => {
 		await runSql(
 			context.env.DB,
 			'DELETE FROM task_team_members WHERE task_id = ?',
+			[taskId]
+		);
+
+		await runSql(
+			context.env.DB,
+			'DELETE FROM task_staff_travel WHERE task_id = ?',
 			[taskId]
 		);
 
@@ -1500,30 +1537,54 @@ app.get('/api/recurring_setting/:id', authMiddleware, async context => {
 app.delete('/api/recurring_setting/:id', authMiddleware, async context => {
 	try {
 		const recId = context.req.param().id;
-
-		// Use native Date logic for today at midnight
-		const todayDate = new Date()
-		todayDate.setHours(0, 0, 0, 0)
-		const today = todayDate.toISOString()
+		const body = await context.req.json().catch(() => ({}));
+		const requestedDate = body?.date || body?.from_date || null;
+		const changeFromIso = requestedDate
+			? (String(requestedDate).includes('T') ? dayjs(requestedDate).toISOString() : dayjs(requestedDate).startOf('day').toISOString())
+			: dayjs().startOf('day').toISOString();
+		const closeDateBeforeChange = dayjs(changeFromIso).subtract(1, 'day').endOf('day').toISOString();
 
 		let futureTasks = await allSql(
 			context.env.DB,
 			`SELECT id FROM tasks
        WHERE recurring_settings = ?
-       AND start_time > ?`,
-			[recId, today]
+       AND start_time >= ?`,
+			[recId, changeFromIso]
 		);
 
 		futureTasks = futureTasks.results || [];
 
 		for (const task of futureTasks) {
+			await runSql(context.env.DB, 'DELETE FROM task_staff_travel WHERE task_id = ?', [task.id]);
 			await runSql(context.env.DB, 'DELETE FROM task_team_members WHERE task_id = ?', [task.id]);
 			await runSql(context.env.DB, 'DELETE FROM tasks WHERE id = ?', [task.id]);
 		}
 
-		await runSql(context.env.DB, 'DELETE FROM recurring_task_settings WHERE id = ?', [recId]);
+		let remainingTasks = await allSql(
+			context.env.DB,
+			`SELECT start_time FROM tasks
+			 WHERE recurring_settings = ?
+			 ORDER BY start_time ASC`,
+			[recId]
+		);
+		remainingTasks = remainingTasks.results || [];
+		const firstRemainingTask = remainingTasks[0] || null;
+		const shouldDeleteRecurringSetting =
+			!firstRemainingTask ||
+			dayjs(closeDateBeforeChange).isSame(dayjs(firstRemainingTask.start_time), 'day') ||
+			dayjs(closeDateBeforeChange).isBefore(dayjs(firstRemainingTask.start_time), 'day');
 
-		return context.json({ ok: true, deletedTasks: futureTasks.length });
+		if (shouldDeleteRecurringSetting) {
+		await runSql(context.env.DB, 'DELETE FROM recurring_task_settings WHERE id = ?', [recId]);
+		} else {
+			await runSql(
+				context.env.DB,
+				'UPDATE recurring_task_settings SET close_date=? WHERE id = ?',
+				[closeDateBeforeChange, recId]
+			);
+		}
+
+		return context.json({ ok: true, deletedTasks: futureTasks.length, change_from_date: changeFromIso });
 	} catch (e) {
 		console.error('delete recurring setting error', e);
 		return context.json({ error: e.message }, 500);
@@ -1539,6 +1600,7 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 
 		const {
 			date,
+			from_date,
 			team_id,
 			staff_id,
 			task_team_members,
@@ -1548,8 +1610,9 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 			location_id
 		} = body;
 
-		const changeFromIso = date
-			? (String(date).includes('T') ? dayjs(date).toISOString() : dayjs(date).startOf('day').toISOString())
+		const requestedDate = date || from_date;
+		const changeFromIso = requestedDate
+			? (String(requestedDate).includes('T') ? dayjs(requestedDate).toISOString() : dayjs(requestedDate).startOf('day').toISOString())
 			: dayjs().startOf('day').toISOString();
 
 		let tasks = await allSql(
@@ -1653,6 +1716,32 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 			WHERE recurring_settings=? AND start_time >= ?`,
 			[newRecId, recId, changeFromIso]
 		);
+
+		let remainingTasks = await allSql(
+			context.env.DB,
+			`SELECT start_time FROM tasks
+			 WHERE recurring_settings = ?
+			 ORDER BY start_time ASC`,
+			[recId]
+		);
+		remainingTasks = remainingTasks.results || [];
+
+		const closeDateBeforeChange = dayjs(changeFromIso).subtract(1, 'day').endOf('day').toISOString();
+		const firstRemainingTask = remainingTasks[0] || null;
+		const shouldDeleteRecurringSetting =
+			!firstRemainingTask ||
+			dayjs(closeDateBeforeChange).isSame(dayjs(firstRemainingTask.start_time), 'day') ||
+			dayjs(closeDateBeforeChange).isBefore(dayjs(firstRemainingTask.start_time), 'day');
+
+		if (shouldDeleteRecurringSetting) {
+			await runSql(context.env.DB, 'DELETE FROM recurring_task_settings WHERE id = ?', [recId]);
+		} else {
+			await runSql(
+				context.env.DB,
+				'UPDATE recurring_task_settings SET close_date=? WHERE id = ?',
+				[closeDateBeforeChange, recId]
+			);
+		}
 
 
 
@@ -1792,6 +1881,7 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 					[location_id, taskId]
 				);
 			}
+
 		}
 
 		// // [PATCH] Update details in recurring_task_settings if team_id, staff_id or task_team_members change
@@ -2347,32 +2437,55 @@ app.get("/schedule/viewStaffRoster", async context => {
 		AND roster_token1 = ?
 		AND roster_token2 = ?
 	`,[url_id, key, key2]);
+
+	// console.log(staff);
   
-	if (!staff.length) {
+	if (!staff) {
 		return context.text("Unauthorized", 403);
 	}
   
-	// Get tasks for next 3 days
-	const tasks = await getSql(context.env.DB, `
-	  SELECT 
-		t.id,
-		t.start_time,
-		t.end_time,
-		c.client_name,
-		GROUP_CONCAT(s.name SEPARATOR ', ') as staff_names
-	  FROM tasks t
-	  JOIN task_team_members tm ON tm.task_id = t.id
-	  JOIN staff s ON s.id = tm.staff_id
-	  LEFT JOIN clients c ON c.id = t.client_id
-	  WHERE t.id IN (
-		  SELECT task_id
-		  FROM task_team_members
-		  WHERE staff_id = ?
-	  )
-	  AND DATE(t.start_time) BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 3 DAY)
-	  GROUP BY t.id
-	  ORDER BY t.start_time
-	`,[url_id]);
+	// Get tasks for the current week (Monday-Sunday)
+	const tasks = await allSql(context.env.DB, `
+		WITH roster_staff AS (
+			SELECT tm.task_id, tm.staff_id, s.name AS staff_name
+			FROM task_team_members tm
+			JOIN staff s ON s.id = tm.staff_id
+
+			UNION
+
+			SELECT t.id AS task_id, t.staff_id, s.name AS staff_name
+			FROM tasks t
+			JOIN staff s ON s.id = t.staff_id
+			WHERE t.staff_id IS NOT NULL
+		)
+		SELECT 
+			t.id,
+			t.start_time,
+			t.end_time,
+			c.client_name,
+			GROUP_CONCAT(
+				CASE
+					WHEN rs.staff_id = t.staff_id THEN rs.staff_name || ' (S)'
+					ELSE rs.staff_name
+				END,
+				', '
+			) AS staff_names
+		FROM tasks t
+		LEFT JOIN clients c ON c.id = t.client_id
+		LEFT JOIN roster_staff rs ON rs.task_id = t.id
+		WHERE (
+				t.staff_id = ?
+				OR t.id IN (
+					SELECT task_id
+					FROM task_team_members
+					WHERE staff_id = ?
+				)
+			)
+			AND DATE(t.start_time) >= DATE('now', '-6 days', 'weekday 1')
+			AND DATE(t.start_time) <= DATE('now', '-6 days', 'weekday 1', '+6 days')
+		GROUP BY t.id
+		ORDER BY t.start_time;
+	`,[url_id, url_id]);
   
 	const formatDate = (date) => {
 	  const d = new Date(date);
@@ -2388,8 +2501,11 @@ app.get("/schedule/viewStaffRoster", async context => {
 	};
   
 	let rows = "";
+
+	// console.log('tasks')
+	// console.log(tasks);
   
-	tasks.forEach(t => {
+	tasks?.results?.forEach(t => {
   
 	  rows += `
 	  <div style="border-bottom: 2px solid lightgrey; padding: 10px;" class="row">
@@ -2457,6 +2573,215 @@ app.get("/schedule/viewStaffRoster", async context => {
   
   return context.render(html);  
   });
+
+
+/* -----------------------------
+  🚗 Task Staff Travel CRUD
+----------------------------- */
+app.get('/api/task_staff_travel', authMiddleware, async context => {
+	try {
+		let rows = await allSql(
+			context.env.DB,
+			'SELECT * FROM task_staff_travel ORDER BY created_at DESC'
+		);
+		rows = rows.results || [];
+		return context.json(rows);
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+app.get('/api/task_staff_travel/task/:task_id', authMiddleware, async context => {
+	try {
+		let rows = await allSql(
+			context.env.DB,
+			'SELECT * FROM task_staff_travel WHERE task_id = ? ORDER BY created_at DESC',
+			[context.req.param().task_id]
+		);
+		rows = rows.results || [];
+		return context.json(rows);
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+app.post('/api/task_staff_travel/bulk', authMiddleware, async context => {
+	try {
+		const body = await context.req.json();
+		const { taskIds } = body;
+
+		if (!Array.isArray(taskIds) || taskIds.length === 0) {
+			return context.json({ error: 'taskIds is required' }, 400);
+		}
+
+		const placeholders = taskIds.map(() => '?').join(',');
+		let rows = await allSql(
+			context.env.DB,
+			`SELECT * FROM task_staff_travel
+			 WHERE task_id IN (${placeholders})
+			 ORDER BY task_id, created_at DESC`,
+			taskIds
+		);
+
+		rows = rows.results || [];
+		return context.json(rows);
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+app.put('/api/task_staff_travel/task/:task_id', authMiddleware, async context => {
+	try {
+		const taskId = context.req.param().task_id;
+		const body = await context.req.json().catch(() => []);
+		const rows = Array.isArray(body) ? body : body.task_staff_travel;
+
+		if (!Array.isArray(rows)) {
+			return context.json({ error: 'task_staff_travel array is required' }, 400);
+		}
+
+		await runSql(context.env.DB, 'DELETE FROM task_staff_travel WHERE task_id = ?', [taskId]);
+
+		for (const row of rows) {
+			if (!row?.staff_id) continue;
+
+			await runSql(
+				context.env.DB,
+				`INSERT INTO task_staff_travel
+				 (id, task_id, staff_id, travel_distance, travel_duration)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					uuidv4(),
+					taskId,
+					row.staff_id,
+					row.travel_distance ?? row.travel_dist ?? null,
+					row.travel_duration ?? row.travel_time ?? null
+				]
+			);
+		}
+
+		let updatedRows = await allSql(
+			context.env.DB,
+			'SELECT * FROM task_staff_travel WHERE task_id = ? ORDER BY created_at DESC',
+			[taskId]
+		);
+		updatedRows = updatedRows.results || [];
+		return context.json(updatedRows);
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+app.delete('/api/task_staff_travel/task/:task_id', authMiddleware, async context => {
+	try {
+		await runSql(
+			context.env.DB,
+			'DELETE FROM task_staff_travel WHERE task_id = ?',
+			[context.req.param().task_id]
+		);
+		return context.json({ ok: true });
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+app.get('/api/task_staff_travel/:id', authMiddleware, async context => {
+	try {
+		const row = await getSql(
+			context.env.DB,
+			'SELECT * FROM task_staff_travel WHERE id = ?',
+			[context.req.param().id]
+		);
+
+		if (!row) {
+			return context.json({ error: 'Task staff travel not found' }, 404);
+		}
+
+		return context.json(row);
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+app.post('/api/task_staff_travel', authMiddleware, async context => {
+	try {
+		const id = uuidv4();
+		const body = await context.req.json();
+		const { task_id, staff_id, travel_distance, travel_duration, travel_dist, travel_time } = body;
+
+		await runSql(
+			context.env.DB,
+			`INSERT INTO task_staff_travel
+			 (id, task_id, staff_id, travel_distance, travel_duration)
+			 VALUES (?, ?, ?, ?, ?)`,
+			[
+				id,
+				task_id,
+				staff_id,
+				travel_distance ?? travel_dist ?? null,
+				travel_duration ?? travel_time ?? null
+			]
+		);
+
+		const row = await getSql(
+			context.env.DB,
+			'SELECT * FROM task_staff_travel WHERE id = ?',
+			[id]
+		);
+
+		return context.json(row);
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+app.put('/api/task_staff_travel/:id', authMiddleware, async context => {
+	try {
+		const body = await context.req.json();
+		const { task_id, staff_id, travel_distance, travel_duration, travel_dist, travel_time } = body;
+
+		await runSql(
+			context.env.DB,
+			`UPDATE task_staff_travel
+			 SET task_id = ?, staff_id = ?, travel_distance = ?, travel_duration = ?
+			 WHERE id = ?`,
+			[
+				task_id,
+				staff_id,
+				travel_distance ?? travel_dist ?? null,
+				travel_duration ?? travel_time ?? null,
+				context.req.param().id
+			]
+		);
+
+		const row = await getSql(
+			context.env.DB,
+			'SELECT * FROM task_staff_travel WHERE id = ?',
+			[context.req.param().id]
+		);
+
+		if (!row) {
+			return context.json({ error: 'Task staff travel not found' }, 404);
+		}
+
+		return context.json(row);
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+app.delete('/api/task_staff_travel/:id', authMiddleware, async context => {
+	try {
+		await runSql(
+			context.env.DB,
+			'DELETE FROM task_staff_travel WHERE id = ?',
+			[context.req.param().id]
+		);
+		return context.json({ ok: true });
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
 
 
 /* -----------------------------
