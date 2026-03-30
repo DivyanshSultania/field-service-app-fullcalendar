@@ -17,6 +17,7 @@ function AuthenticatedApp({ user, onLogout }) {
     const [clients, setClients] = useState([]);
     const [filter, setFilter] = useState({ type: 'staff', ids: [], hiddenDays: [] });
     const [view, setView] = useState('calendar');
+    const [taskOpenRequest, setTaskOpenRequest] = useState(null);
   
     const token = localStorage.getItem("token");
   
@@ -74,11 +75,23 @@ function AuthenticatedApp({ user, onLogout }) {
         case 'team':
           return <TeamManagement />;
         case 'schedule':
-          return <Schedule />;
+          return (
+            <Schedule
+              onOpenTask={(taskId) => {
+                setTaskOpenRequest({
+                  taskId,
+                  requestedAt: Date.now(),
+                });
+                setView('calendar');
+              }}
+            />
+          );
         default:
           return (
             <CalendarView
               filter={filter}
+              openTaskRequest={taskOpenRequest}
+              onOpenTaskHandled={() => setTaskOpenRequest(null)}
               onHiddenDaysChange={hiddenDays =>
                 setFilter(prev => ({ ...prev, hiddenDays }))
               }
