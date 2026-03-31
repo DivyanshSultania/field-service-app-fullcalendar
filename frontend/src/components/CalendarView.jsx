@@ -1016,6 +1016,15 @@ export default function CalendarView({
     // Group by supervisor staff_id (consistent with tasks schema)
     const byStaff = new Map();
     for (const t of scopedTasks) {
+      const paymentType = (t.payment_type || '').trim();
+      const amountNum = t.payment_amount != null && t.payment_amount !== ''
+        ? Number(t.payment_amount)
+        : 0;
+
+      if (!paymentType || !Number.isFinite(amountNum) || amountNum <= 0) {
+        continue;
+      }
+
       const staffId = t.staff_id || 'unknown';
       const staffName =
         staffs.find(s => s.id === staffId)?.name ||
@@ -1031,10 +1040,6 @@ export default function CalendarView({
 
       const logMinutes = (t.started_at && t.stopped_at)
         ? Math.max(0, Math.round((new Date(t.stopped_at) - new Date(t.started_at)) / 60000))
-        : 0;
-
-      const amountNum = t.payment_amount != null && t.payment_amount !== ''
-        ? Number(t.payment_amount)
         : 0;
 
       const clientName = t.client_name || clients.find(c => c.id === t.client_id)?.client_name || '';
@@ -1056,8 +1061,8 @@ export default function CalendarView({
         shift_name: title,
         sched_min: schedMinutes,
         log_min: logMinutes,
-        payment_type: t.payment_type || '',
-        amount: Number.isFinite(amountNum) ? amountNum : 0
+        payment_type: paymentType,
+        amount: amountNum
       });
     }
 
