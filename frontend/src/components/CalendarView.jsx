@@ -887,6 +887,31 @@ export default function CalendarView({
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   };
 
+  const positionTaskTooltip = (anchorEl, tooltipEl) => {
+    if (!anchorEl || !tooltipEl) return;
+
+    const viewportPadding = 12;
+    const tooltipOffset = 10;
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const tooltipRect = tooltipEl.getBoundingClientRect();
+    const spaceOnRight = window.innerWidth - anchorRect.right - viewportPadding;
+    const spaceOnLeft = anchorRect.left - viewportPadding;
+
+    let left = anchorRect.right + tooltipOffset;
+    if (spaceOnRight < tooltipRect.width + tooltipOffset && spaceOnLeft >= tooltipRect.width + tooltipOffset) {
+      left = anchorRect.left - tooltipRect.width - tooltipOffset;
+    }
+
+    const maxLeft = Math.max(viewportPadding, window.innerWidth - tooltipRect.width - viewportPadding);
+    left = Math.min(Math.max(left, viewportPadding), maxLeft);
+
+    const maxTop = Math.max(viewportPadding, window.innerHeight - tooltipRect.height - viewportPadding);
+    const top = Math.min(Math.max(anchorRect.top, viewportPadding), maxTop);
+
+    tooltipEl.style.left = `${Math.round(left)}px`;
+    tooltipEl.style.top = `${Math.round(top)}px`;
+  };
+
   function taskMatchesCurrentFilter(t) {
     if (!filter?.ids || filter.ids.length === 0) return true;
 
@@ -4195,7 +4220,7 @@ export default function CalendarView({
                 t.staff_name ? `${t.staff_name} (S)` : null,
                 ...(t.task_team_members_name || [])
               ].filter(Boolean).join(' ');
-            
+
               const tooltip = document.createElement("div");
               tooltip.className = "task-tooltip";
 
@@ -4214,18 +4239,37 @@ export default function CalendarView({
                 <div><strong>Mobile:</strong> ${t.task_client_phone || ""}</div>
                 <div><strong>Client Instruction:</strong> ${t.task_client_instruction || ""}</div>
               `;
-            
-              info.el.addEventListener("mouseenter", () => {
-                document.body.appendChild(tooltip);
-                const rect = info.el.getBoundingClientRect();
-            
-                tooltip.style.top = rect.top + window.scrollY + "px";
-                tooltip.style.left = rect.right + 10 + "px";
-              });
-            
-              info.el.addEventListener("mouseleave", () => {
+
+              const updateTooltipPosition = () => positionTaskTooltip(info.el, tooltip);
+
+              const showTooltip = () => {
+                if (!tooltip.isConnected) {
+                  tooltip.style.visibility = 'hidden';
+                  document.body.appendChild(tooltip);
+                }
+
+                updateTooltipPosition();
+                tooltip.style.visibility = 'visible';
+                window.addEventListener('resize', updateTooltipPosition);
+                window.addEventListener('scroll', updateTooltipPosition, true);
+              };
+
+              const hideTooltip = () => {
+                window.removeEventListener('resize', updateTooltipPosition);
+                window.removeEventListener('scroll', updateTooltipPosition, true);
                 tooltip.remove();
-              });
+              };
+
+              info.el.addEventListener("mouseenter", showTooltip);
+              info.el.addEventListener("mouseleave", hideTooltip);
+              info.el._taskTooltipCleanup = () => {
+                hideTooltip();
+                info.el.removeEventListener('mouseenter', showTooltip);
+                info.el.removeEventListener('mouseleave', hideTooltip);
+              };
+            }}
+            eventWillUnmount={(info) => {
+              info.el._taskTooltipCleanup?.();
             }}
 
             dayHeaderContent={(arg) => {
