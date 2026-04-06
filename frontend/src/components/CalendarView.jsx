@@ -3656,8 +3656,7 @@ export default function CalendarView({
 
           {taskModalMainTab === 'Repeat' && (
             <div style={{padding:'20px', textAlign:'center', color:'#6b7280'}}>
-              {/* <RecurringShiftSettings task={currentTask} onCreated={refreshCalendar} /> */}
-              <RecurringShiftSettings task={currentTask} />
+              <RecurringShiftSettings task={currentTask} onCreated={refreshTasksForCurrentRange} />
 
             </div>
           )}
@@ -4242,7 +4241,9 @@ export default function CalendarView({
               const accentColor = t.statusBorderColor || info.event.borderColor || '#7c3aed';
               info.el.style.background = `linear-gradient(${cardColor}, ${cardColor}) padding-box, linear-gradient(135deg, ${withAlpha(accentColor, 0.5)}, ${accentColor}) border-box`;
               info.el.style.border = '4px solid transparent';
-              info.el.style.borderRadius = '6px';
+              info.el.style.borderRadius = '8px';
+              info.el.style.borderRadius = '8px';
+              info.el.style.boxShadow = `0 0 0 2px ${withAlpha(accentColor, 0.5)}`;
             
               const staffList = [
                 t.staff_name ? `${t.staff_name} (S)` : null,

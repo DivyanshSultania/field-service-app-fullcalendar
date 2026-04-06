@@ -16,7 +16,7 @@ const DAYS = [
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 
-export default function RecurringShiftSettings({ task }) {
+export default function RecurringShiftSettings({ task, onCreated }) {
   const [frequency, setFrequency] = useState(1);
   const [selectedDays, setSelectedDays] = useState([]);
   const [occurrences, setOccurrences] = useState("");
@@ -1291,22 +1291,36 @@ export default function RecurringShiftSettings({ task }) {
 
     setLoading(true);
 
-    await authFetch(`${VITE_KEY}/api/tasks/${task.id}/recurring`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        frequency,
-        selectedDays,
-        occurrences: occurrences || null,
-        closeDate: closeDate || null,
-        startingDate: task.start_date || task.start_time,
-        team_id: task.team_id,
-        parent_task: task.id
-      })
-    });
+    try {
+      const response = await authFetch(`${VITE_KEY}/api/tasks/${task.id}/recurring`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          frequency,
+          selectedDays,
+          occurrences: occurrences || null,
+          closeDate: closeDate || null,
+          startingDate: task.start_date || task.start_time,
+          team_id: task.team_id,
+          parent_task: task.id
+        })
+      });
 
-    setLoading(false);
-    alert("Recurring shifts created");
+      if (!response.ok) {
+        throw new Error('Failed to create recurring shifts');
+      }
+
+      await loadRecurring();
+      if (onCreated) {
+        await onCreated();
+      }
+      alert("Recurring shifts created");
+    } catch (error) {
+      console.error('create recurring shifts error', error);
+      alert("Failed to create recurring shifts");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openEditChildTask = (t) => {
