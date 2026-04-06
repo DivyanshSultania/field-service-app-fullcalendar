@@ -2486,6 +2486,43 @@ export default function CalendarView({
       }
     }
 
+    async function handleSaveTimeTracking() {
+      if (!currentTask?.id) return;
+
+      setManageLoading(true);
+      try {
+        const response = await authFetch(`${VITE_KEY}/api/tasks/${currentTask.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            started_at: currentTask.started_at || null,
+            stopped_at: currentTask.stopped_at || null,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(await getResponseError(response, 'Failed to update time tracking'));
+        }
+
+        const updatedTask = await readJsonOrFallback(response, {});
+        const mergedTask = {
+          ...currentTask,
+          ...updatedTask,
+          task_team_members: currentTask.task_team_members || [],
+          task_team_members_name: currentTask.task_team_members_name || [],
+        };
+
+        setCurrentTask(mergedTask);
+        setTasks(prevTasks => replaceTaskInList(prevTasks, mergedTask));
+        showToast('Time tracking updated', '#16a34a');
+      } catch (err) {
+        console.error('Update time tracking error', err);
+        showToast(err.message || 'Failed to update time tracking');
+      } finally {
+        setManageLoading(false);
+      }
+    }
+
     // Instructions Handlers
     function instructionsResponseLabel(rt) {
       if (!rt) return '';
@@ -2587,6 +2624,11 @@ export default function CalendarView({
     const buildIso = (dateText, timeText) => {
       if (!dateText || !timeText) return null;
       return dayjs(`${dateText}T${timeText}`).toISOString();
+    };
+    const readOnlyTimeTrackingInputStyle = {
+      background: '#f9fafb',
+      color: '#6b7280',
+      cursor: 'not-allowed',
     };
     const scheduledMinutes = (currentTask.start_time && currentTask.end_time)
       ? Math.max(0, dayjs(currentTask.end_time).diff(dayjs(currentTask.start_time), 'minute'))
@@ -3189,21 +3231,14 @@ export default function CalendarView({
                             <input
                               type="date"
                               value={getDateValue(currentTask.start_time)}
-                              onChange={(e) => {
-                                const nextDate = e.target.value;
-                                const nextTime = getTimeValue(currentTask.start_time) || '09:00';
-                                const nextIso = buildIso(nextDate, nextTime);
-                                if (nextIso) handleShiftUpdate({ start_time: nextIso });
-                              }}
+                              disabled
+                              style={readOnlyTimeTrackingInputStyle}
                             />
                             <input
                               type="time"
                               value={getTimeValue(currentTask.start_time)}
-                              onChange={(e) => {
-                                const nextDate = getDateValue(currentTask.start_time) || dayjs().format('YYYY-MM-DD');
-                                const nextIso = buildIso(nextDate, e.target.value);
-                                if (nextIso) handleShiftUpdate({ start_time: nextIso });
-                              }}
+                              disabled
+                              style={readOnlyTimeTrackingInputStyle}
                             />
                           </div>
                           <div style={{display:'grid', gridTemplateColumns:'70px 1fr 1fr', gap:10, alignItems:'center'}}>
@@ -3214,21 +3249,14 @@ export default function CalendarView({
                             <input
                               type="date"
                               value={getDateValue(currentTask.end_time)}
-                              onChange={(e) => {
-                                const nextDate = e.target.value;
-                                const nextTime = getTimeValue(currentTask.end_time) || '10:00';
-                                const nextIso = buildIso(nextDate, nextTime);
-                                if (nextIso) handleShiftUpdate({ end_time: nextIso });
-                              }}
+                              disabled
+                              style={readOnlyTimeTrackingInputStyle}
                             />
                             <input
                               type="time"
                               value={getTimeValue(currentTask.end_time)}
-                              onChange={(e) => {
-                                const nextDate = getDateValue(currentTask.end_time) || getDateValue(currentTask.start_time) || dayjs().format('YYYY-MM-DD');
-                                const nextIso = buildIso(nextDate, e.target.value);
-                                if (nextIso) handleShiftUpdate({ end_time: nextIso });
-                              }}
+                              disabled
+                              style={readOnlyTimeTrackingInputStyle}
                             />
                           </div>
                         </div>
@@ -3301,7 +3329,7 @@ export default function CalendarView({
                           <div style={{fontSize:12,color:'#6b7280'}}>Pay Length</div>
                           <input value={formatMinutesAsHHMMSS(payMinutes)} readOnly />
                         </div>
-                        <button className="btn primary" onClick={handleSaveShiftModal}>Update</button>
+                        <button className="btn primary" onClick={handleSaveTimeTracking} disabled={manageLoading}>Update</button>
                       </div>
                     </div>
 
