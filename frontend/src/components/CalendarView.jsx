@@ -267,6 +267,88 @@ export default function CalendarView({
     });
   }
 
+  function getPrimaryTaskInstructionText(instructionList = []) {
+    if (!Array.isArray(instructionList)) return '';
+
+    const firstInstruction = instructionList.find(instruction => `${instruction?.ques || ''}`.trim());
+    return firstInstruction ? `${firstInstruction.ques}`.trim() : '';
+  }
+
+  function syncTaskInstructionState(taskId, instructionList = []) {
+    if (!taskId) return;
+
+    const nextInstructionText = getPrimaryTaskInstructionText(instructionList);
+    const applyInstructionText = (task) => (
+      task?.id === taskId
+        ? { ...task, task_instruction_text: nextInstructionText }
+        : task
+    );
+
+    setCurrentTask(previousTask => (
+      previousTask?.id === taskId
+        ? { ...previousTask, task_instruction_text: nextInstructionText }
+        : previousTask
+    ));
+
+    const nextCache = new Map(
+      Array.from(tasksByMonthRef.current.entries()).map(([monthKey, monthTasks]) => ([
+        monthKey,
+        (Array.isArray(monthTasks) ? monthTasks : []).map(applyInstructionText),
+      ]))
+    );
+
+    tasksByMonthRef.current = nextCache;
+
+    if (nextCache.size > 0) {
+      syncTasksFromMonthCache(nextCache);
+      return;
+    }
+
+    setTasks(previousTasks => previousTasks.map(applyInstructionText));
+  }
+
+  async function attachInstructionTextToTasks(taskList) {
+    const nextTasks = Array.isArray(taskList) ? taskList : [];
+    const taskIds = [...new Set(nextTasks.map(task => task?.id).filter(Boolean))];
+
+    if (taskIds.length === 0) {
+      return nextTasks;
+    }
+
+    try {
+      const response = await authFetch(`${VITE_KEY}/api/task_instructions/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskIds }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to load task instructions');
+      }
+
+      const instructionRows = await readJsonOrFallback(response, []);
+      const instructionTextByTaskId = new Map();
+
+      (Array.isArray(instructionRows) ? instructionRows : []).forEach((instruction) => {
+        const instructionText = `${instruction?.ques || ''}`.trim();
+        if (instruction?.task_id && instructionText && !instructionTextByTaskId.has(instruction.task_id)) {
+          instructionTextByTaskId.set(instruction.task_id, instructionText);
+        }
+      });
+
+      return nextTasks.map(task => ({
+        ...task,
+        task_instruction_text: instructionTextByTaskId.get(task.id) || '',
+      }));
+    } catch (error) {
+      console.error('Failed to attach task instructions to tasks', error);
+      return nextTasks.map(task => ({
+        ...task,
+        task_instruction_text: task?.task_instruction_text || '',
+      }));
+    }
+  }
+
   function syncTasksFromMonthCache(nextCache = tasksByMonthRef.current) {
     const mergedTasks = [];
     const seenTaskIds = new Set();
@@ -316,9 +398,10 @@ export default function CalendarView({
     try {
       const res = await authFetch(`${VITE_KEY}/api/tasks?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
       const taskResp = await res.json();
+      const tasksWithInstructions = await attachInstructionTextToTasks(taskResp);
       if (taskFetchRequestIdsRef.current.get(monthKey) === requestId) {
         const nextCache = new Map(tasksByMonthRef.current);
-        nextCache.set(monthKey, Array.isArray(taskResp) ? taskResp : []);
+        nextCache.set(monthKey, tasksWithInstructions);
         tasksByMonthRef.current = nextCache;
         loadedMonthKeysRef.current.add(monthKey);
         syncTasksFromMonthCache(nextCache);
@@ -885,6 +968,19 @@ export default function CalendarView({
     const g = (rgb >> 8) & 255;
     const b = rgb & 255;
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  };
+
+  const escapeTooltipHtml = (value) => `${value ?? ''}`
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  const buildTooltipRow = (label, value) => {
+    const safeValue = `${value ?? ''}`.trim();
+    if (!safeValue) return '';
+    return `<div><strong>${label}:</strong> ${escapeTooltipHtml(safeValue)}</div>`;
   };
 
   const positionTaskTooltip = (anchorEl, tooltipEl) => {
@@ -2378,13 +2474,14 @@ export default function CalendarView({
       authFetch(`${VITE_KEY}/api/task_instructions/${taskObj.id}`)
         .then(r => r.json())
         .then(list => {
-          if (Array.isArray(list)) {
-            setEditInstructions(list || []);
-          } else {
-            setEditInstructions([]);
-          }
+          const nextInstructions = Array.isArray(list) ? (list || []) : [];
+          setEditInstructions(nextInstructions);
+          syncTaskInstructionState(taskObj.id, nextInstructions);
         })
-        .catch(() => setEditInstructions([]));
+        .catch(() => {
+          setEditInstructions([]);
+          syncTaskInstructionState(taskObj.id, []);
+        });
 
         authFetch(`${VITE_KEY}/api/task_comments/${taskObj.id}`)
         .then(r => r.json())
@@ -2534,13 +2631,19 @@ export default function CalendarView({
     async function handleAddInstruction(e) {
       e.preventDefault();
       if (!currentTask || !currentTask.id) return;
+      if (editInstructions.length >= 1) {
+        showToast('Only one instruction is allowed for this shift.');
+        return;
+      }
       const payload = { task_id: currentTask.id, ques: editInstructionInput, resp_type: editInstructionInputRespType };
       try {
         const res = await authFetch(`${VITE_KEY}/api/task_instructions`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
         });
         const newInst = await res.json();
-        setEditInstructions(arr => [...arr, newInst]);
+        const nextInstructions = [...editInstructions, newInst];
+        setEditInstructions(nextInstructions);
+        syncTaskInstructionState(currentTask.id, nextInstructions);
         setEditInstructionInput('');
         setEditInstructionInputRespType('text');
       } catch (err) {
@@ -2560,7 +2663,11 @@ export default function CalendarView({
         debugger;
         authFetch(`${VITE_KEY}/api/task_instructions/${currentTask.id}`)
           .then(r => r.json())
-          .then(list => setEditInstructions(list || []))
+          .then(list => {
+            const nextInstructions = Array.isArray(list) ? (list || []) : [];
+            setEditInstructions(nextInstructions);
+            syncTaskInstructionState(currentTask.id, nextInstructions);
+          })
           .catch(() => {});
       }
     }
@@ -2577,7 +2684,9 @@ export default function CalendarView({
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(inst)
         });
         const updated = await res.json();
-        setEditInstructions(arr => arr.map(i => i.id === id ? updated : i));
+        const nextInstructions = editInstructions.map(i => i.id === id ? updated : i);
+        setEditInstructions(nextInstructions);
+        syncTaskInstructionState(currentTask?.id, nextInstructions);
         setEditingInstructionId(null);
       } catch (err) {
         console.error('Update instruction error', err);
@@ -2589,7 +2698,9 @@ export default function CalendarView({
       if (!confirm('Delete instruction?')) return;
       try {
         await authFetch(`${VITE_KEY}/api/task_instructions/${id}`, { method: 'DELETE' });
-        setEditInstructions(arr => arr.filter(i => i.id !== id));
+        const nextInstructions = editInstructions.filter(i => i.id !== id);
+        setEditInstructions(nextInstructions);
+        syncTaskInstructionState(currentTask?.id, nextInstructions);
       } catch (err) {
         console.error('Delete instruction error', err);
         showToast(typeof arguments[1] === 'string' ? arguments[1] : (arguments[0]?.message || 'Error occurred'));
@@ -3100,31 +3211,37 @@ export default function CalendarView({
                           </div>
                         </div>
 
-                        <div style={{marginTop:12, padding:12, border:'1px solid #eaeaea', borderRadius:8, background:'#fff'}}>
-                          <div style={{fontWeight:600, marginBottom:8}}>New Instruction</div>
-                          <form onSubmit={handleAddInstruction}>
-                            <textarea placeholder="Enter detailed instruction for this shift..." value={editInstructionInput} onChange={e=>setEditInstructionInput(e.target.value)} rows={4} style={{width:'100%',padding:10,borderRadius:8,border:'1px solid #bfc6ea'}} />
+                        {editInstructions.length === 0 ? (
+                          <div style={{marginTop:12, padding:12, border:'1px solid #eaeaea', borderRadius:8, background:'#fff'}}>
+                            <div style={{fontWeight:600, marginBottom:8}}>New Instruction</div>
+                            <form onSubmit={handleAddInstruction}>
+                              <textarea placeholder="Enter detailed instruction for this shift..." value={editInstructionInput} onChange={e=>setEditInstructionInput(e.target.value)} rows={4} style={{width:'100%',padding:10,borderRadius:8,border:'1px solid #bfc6ea'}} />
 
-                            <div style={{marginTop:12}}>
-                              <div style={{fontWeight:600, marginBottom:8}}>Response Type</div>
-                              <div style={{display:'flex',gap:12,alignItems:'center'}}>
-                                <label style={{display:'flex',alignItems:'center',gap:6}}>
-                                  <input type="radio" name="new_resp" checked={editInstructionInputRespType==='ok'} onChange={()=>setEditInstructionInputRespType('ok')} /> OK Confirmation
-                                </label>
-                                <label style={{display:'flex',alignItems:'center',gap:6}}>
-                                  <input type="radio" name="new_resp" checked={editInstructionInputRespType==='yesno'} onChange={()=>setEditInstructionInputRespType('yesno')} /> Yes/No Question
-                                </label>
-                                <label style={{display:'flex',alignItems:'center',gap:6}}>
-                                  <input type="radio" name="new_resp" checked={editInstructionInputRespType==='text'} onChange={()=>setEditInstructionInputRespType('text')} /> Text Response
-                                </label>
+                              <div style={{marginTop:12}}>
+                                <div style={{fontWeight:600, marginBottom:8}}>Response Type</div>
+                                <div style={{display:'flex',gap:12,alignItems:'center'}}>
+                                  <label style={{display:'flex',alignItems:'center',gap:6}}>
+                                    <input type="radio" name="new_resp" checked={editInstructionInputRespType==='ok'} onChange={()=>setEditInstructionInputRespType('ok')} /> OK Confirmation
+                                  </label>
+                                  <label style={{display:'flex',alignItems:'center',gap:6}}>
+                                    <input type="radio" name="new_resp" checked={editInstructionInputRespType==='yesno'} onChange={()=>setEditInstructionInputRespType('yesno')} /> Yes/No Question
+                                  </label>
+                                  <label style={{display:'flex',alignItems:'center',gap:6}}>
+                                    <input type="radio" name="new_resp" checked={editInstructionInputRespType==='text'} onChange={()=>setEditInstructionInputRespType('text')} /> Text Response
+                                  </label>
+                                </div>
                               </div>
-                            </div>
 
-                            <div style={{display:'flex',justifyContent:'flex-end',marginTop:12}}>
-                              <button className="btn primary" type="submit">Add Instruction</button>
-                            </div>
-                          </form>
-                        </div>
+                              <div style={{display:'flex',justifyContent:'flex-end',marginTop:12}}>
+                                <button className="btn primary" type="submit">Add Instruction</button>
+                              </div>
+                            </form>
+                          </div>
+                        ) : (
+                          <div style={{marginTop:12, padding:12, border:'1px solid #eaeaea', borderRadius:8, background:'#f9fafb', color:'#6b7280'}}>
+                            Only one instruction is allowed per shift. Edit or delete the existing instruction to replace it.
+                          </div>
+                        )}
                       </div>
                     </div>
                 )}
@@ -4257,16 +4374,16 @@ export default function CalendarView({
 
               const m = dayjs(info.event.end).diff(dayjs(info.event.start), "minute");
               const length = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+              const shiftInstruction = t.task_instruction_text || '';
             
               tooltip.innerHTML = `
-                <div class="tt-title">${t.client_name || ""}</div>
-                <div><strong>Staff:</strong> ${staffList}</div>
-                <div><strong>Length:</strong> ${
-                  length
-                }</div>
-                <div><strong>Location:</strong> ${locationAddress || t.location_title || ""}</div>
-                <div><strong>Mobile:</strong> ${t.task_client_phone || ""}</div>
-                <div><strong>Client Instruction:</strong> ${t.task_client_instruction || ""}</div>
+                <div class="tt-title">${escapeTooltipHtml(t.client_name || "")}</div>
+                ${buildTooltipRow('Staff', staffList)}
+                ${buildTooltipRow('Length', length)}
+                ${buildTooltipRow('Location', locationAddress || t.location_title || "")}
+                ${buildTooltipRow('Mobile', t.task_client_phone || "")}
+                ${buildTooltipRow('Client Instruction', t.task_client_instruction || "")}
+                ${buildTooltipRow('Shift Instruction', shiftInstruction)}
               `;
 
               const updateTooltipPosition = () => positionTaskTooltip(info.el, tooltip);
