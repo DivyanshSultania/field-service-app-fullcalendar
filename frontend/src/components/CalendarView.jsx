@@ -1364,7 +1364,7 @@ export default function CalendarView({
       const clientName = clients.find(c => c.id === t.client_id)?.client_name || t.client_name || '';
       const staffName = staffs.find(s => s.id === t.staff_id)?.name || t.staff_name || '';
       const when = t.start_time ? dayjs(t.start_time).format('YYYY-MM-DD hh:mm a') : '';
-      const title = `${t.task_name || 'Shift'}${clientName ? ` • ${clientName}` : ''}`;
+      const title = `${t.task_name || ''}${clientName ? ` • ${clientName}` : ''}`;
       let subtitle = `${when}${staffName ? ` • ${staffName} (S) ` : ''}`;
 
       if (t.task_team_members_name?.length > 0) {
@@ -4370,7 +4370,11 @@ export default function CalendarView({
               const tooltip = document.createElement("div");
               tooltip.className = "task-tooltip";
 
-              let locationAddress = locations.find(l => l.id === t.location_id)?.address || "";
+              const assignedLocation = locations.find(l => l.id === t.location_id);
+              const locationAddress = assignedLocation?.address || "";
+              const locationText = [assignedLocation?.unit_no ? `${assignedLocation.unit_no}` : '', locationAddress || t.location_title || ""]
+                .filter(Boolean)
+                .join(' ');
 
               const m = dayjs(info.event.end).diff(dayjs(info.event.start), "minute");
               const length = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
@@ -4380,7 +4384,7 @@ export default function CalendarView({
                 <div class="tt-title">${escapeTooltipHtml(t.client_name || "")}</div>
                 ${buildTooltipRow('Staff', staffList)}
                 ${buildTooltipRow('Length', length)}
-                ${buildTooltipRow('Location', locationAddress || t.location_title || "")}
+                ${buildTooltipRow('Location', locationText)}
                 ${buildTooltipRow('Mobile', t.task_client_phone || "")}
                 ${buildTooltipRow('Client Instruction', t.task_client_instruction || "")}
                 ${buildTooltipRow('Shift Instruction', shiftInstruction)}
