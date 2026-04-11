@@ -55,6 +55,9 @@ function getTaskStatusMeta(task) {
   };
 }
 
+/** Order for status totals in the header (matches getTaskStatusMeta labels). */
+const TASK_STATUS_SUMMARY_ORDER = ['Cancelled', 'Completed', 'In Progress', 'Accepted', 'Scheduled'];
+
 function formatDateTime(value, pattern = 'DD MMM HH:mm') {
   if (!value) return '-';
   return dayjs(value).format(pattern);
@@ -113,11 +116,50 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function getTaskHeadcount(task) {
+  return getAssignedStaffIds(task).length;
+}
+
+/** Scaled (log − scheduled) × headcount in minutes, or null when log length should not show a diff. */
+function getLengthDiffMinutesScaled(task) {
+  const logMins = Number(task?.log_length_minutes) || 0;
+  if (!logMins) return null;
+  const schMins = Number(task?.scheduled_length_minutes) || 0;
+  const headcount = getTaskHeadcount(task);
+  return (logMins - schMins) * headcount;
+}
+
+const diffPositiveColor = '#dc2626';
+const diffNegativeColor = '#16a34a';
+const diffNeutralColor = '#64748b';
+
 function buildPrintHtml(tasks, appliedFilters) {
+  const statusCounts = {};
+  const statusMetaByLabel = {};
+  for (const task of tasks) {
+    const meta = getTaskStatusMeta(task);
+    statusCounts[meta.label] = (statusCounts[meta.label] || 0) + 1;
+    statusMetaByLabel[meta.label] = meta;
+  }
+
+  const statusSummaryHtml = TASK_STATUS_SUMMARY_ORDER
+    .filter(label => statusCounts[label] > 0)
+    .map(label => {
+      const meta = statusMetaByLabel[label];
+      return `
+        <span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:${meta.background};color:${meta.color};font-size:13px;font-weight:700;">
+          ${escapeHtml(label)} <span style="font-weight:800;">${statusCounts[label]}</span>
+        </span>
+      `;
+    })
+    .join('');
+
   const rows = tasks.map((task, index) => {
     const status = getTaskStatusMeta(task);
-    const scheduledLength = formatHM(task?.scheduled_length_minutes || 0);
-    const loggedLength = formatHM(task?.log_length_minutes || 0);
+    const headcount = getTaskHeadcount(task);
+    const scheduledLength = formatHM((task?.scheduled_length_minutes || 0) * headcount);
+    const loggedLength = formatHM((task?.log_length_minutes || 0) * headcount);
+    const diffMins = getLengthDiffMinutesScaled(task);
     const logValue = task?.log_start_time
       ? `${formatDateTime(task.log_start_time)}${task?.log_end_time ? ` - ${formatDateTime(task.log_end_time, 'HH:mm')}` : ''}`
       : '...';
@@ -136,9 +178,15 @@ function buildPrintHtml(tasks, appliedFilters) {
         </td>
         <td>${escapeHtml(buildStaffLabel(task))}</td>
         <td>${escapeHtml(formatDateTime(task?.start_time))}</td>
-        <td>00:00</td>
         <td>${escapeHtml(logValue)}</td>
         <td>${escapeHtml(`${scheduledLength} / ${loggedLength}`)}</td>
+        <td>${
+          diffMins == null
+            ? ''
+            : `<span style="color:${
+                diffMins > 0 ? diffPositiveColor : diffMins < 0 ? diffNegativeColor : diffNeutralColor
+              };font-weight:600;">${escapeHtml(String(diffMins))} min</span>`
+        }</td>
       </tr>
     `;
   }).join('');
@@ -148,7 +196,7 @@ function buildPrintHtml(tasks, appliedFilters) {
     <html lang="en">
       <head>
         <meta charset="utf-8" />
-        <title>Roster PDF</title>
+        <title>HomeMaid</title>
         <style>
           body {
             font-family: Arial, sans-serif;
@@ -219,6 +267,7 @@ function buildPrintHtml(tasks, appliedFilters) {
         <div class="meta">
           Date range: ${escapeHtml(formatDateTime(appliedFilters?.from, 'DD MMM YYYY'))} to ${escapeHtml(formatDateTime(appliedFilters?.to, 'DD MMM YYYY'))}
         </div>
+        ${statusSummaryHtml ? `<div style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">${statusSummaryHtml}</div>` : ''}
 
         <table class="report">
           <thead>
@@ -227,9 +276,9 @@ function buildPrintHtml(tasks, appliedFilters) {
               <th>Shift</th>
               <th>Staff</th>
               <th>Sch</th>
-              <th>Break</th>
               <th>Log</th>
               <th>Sch / Log Length</th>
+              <th>Diff</th>
             </tr>
           </thead>
           <tbody>
@@ -289,6 +338,24 @@ export default function IndividualView({
 
   const cancelledCount = tasks.filter(task => isCoverTask(task)).length;
   const scheduledCount = tasks.length - cancelledCount;
+
+  const statusSummaryItems = useMemo(() => {
+    const counts = {};
+    const metaByLabel = {};
+    for (const task of tasks) {
+      const meta = getTaskStatusMeta(task);
+      const { label } = meta;
+      counts[label] = (counts[label] || 0) + 1;
+      metaByLabel[label] = meta;
+    }
+    return TASK_STATUS_SUMMARY_ORDER.filter(label => counts[label] > 0).map(label => ({
+      label,
+      count: counts[label],
+      color: metaByLabel[label].color,
+      background: metaByLabel[label].background,
+    }));
+  }, [tasks]);
+
   const allSelected = tasks.length > 0 && selectedTaskIds.length === tasks.length;
   const hasSelection = selectedTaskIds.length > 0;
 
@@ -1000,10 +1067,41 @@ export default function IndividualView({
             <div style={{ fontSize: 14, color: '#475569' }}>
               Range {formatDateTime(appliedFilters?.from, 'DD MMM YYYY')} to {formatDateTime(appliedFilters?.to, 'DD MMM YYYY')}
             </div>
-            <div style={{ marginTop: 8, fontSize: 14, fontWeight: 700, color: '#334155' }}>
+            {/* <div style={{ marginTop: 8, fontSize: 14, fontWeight: 700, color: '#334155' }}>
               Cancelled : {cancelledCount} Schedule : {scheduledCount} Total : {tasks.length}
               {hasSelection ? ` Selected : ${selectedTaskIds.length}` : ''}
-            </div>
+            </div> */}
+            {statusSummaryItems.length > 0 && (
+              <div
+                style={{
+                  marginTop: 10,
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  alignItems: 'center',
+                }}
+              >
+                {statusSummaryItems.map(({ label, count, color, background }) => (
+                  <span
+                    key={label}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '4px 10px',
+                      borderRadius: 999,
+                      background,
+                      color,
+                      fontSize: 13,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {label}
+                    <span style={{ fontWeight: 800 }}>{count}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
@@ -1065,9 +1163,9 @@ export default function IndividualView({
                   <th style={headerCellStyle}>Shift</th>
                   <th style={headerCellStyle}>Staff</th>
                   <th style={headerCellStyle}>Sch</th>
-                  <th style={headerCellStyle}>Break</th>
                   <th style={headerCellStyle}>Log</th>
                   <th style={headerCellStyle}>Sch / Log Length</th>
+                  <th style={headerCellStyle}>Diff</th>
                   <th style={headerCellStyle}>Action</th>
                 </tr>
               </thead>
@@ -1075,8 +1173,10 @@ export default function IndividualView({
                 {tasks.map((task, index) => {
                   const status = getTaskStatusMeta(task);
                   const subtitle = buildShiftSubtitle(task);
-                  const scheduledLength = formatHM(task?.scheduled_length_minutes || 0);
-                  const loggedLength = formatHM(task?.log_length_minutes || 0);
+                  const headcount = getTaskHeadcount(task);
+                  const scheduledLength = formatHM((task?.scheduled_length_minutes || 0) * headcount);
+                  const loggedLength = formatHM((task?.log_length_minutes || 0) * headcount);
+                  const diffMins = getLengthDiffMinutesScaled(task);
                   const logValue = task?.log_start_time
                     ? `${formatDateTime(task.log_start_time)}${task?.log_end_time ? ` - ${formatDateTime(task.log_end_time, 'HH:mm')}` : ''}`
                     : '...';
@@ -1128,9 +1228,25 @@ export default function IndividualView({
                       </td>
                       <td style={bodyCellStyle}>{buildStaffLabel(task)}</td>
                       <td style={bodyCellStyle}>{formatDateTime(task?.start_time)}</td>
-                      <td style={bodyCellStyle}>00:00</td>
                       <td style={bodyCellStyle}>{logValue}</td>
                       <td style={bodyCellStyle}>{scheduledLength} / {loggedLength}</td>
+                      <td style={bodyCellStyle}>
+                        {diffMins != null ? (
+                          <span
+                            style={{
+                              color:
+                                diffMins > 0
+                                  ? diffPositiveColor
+                                  : diffMins < 0
+                                    ? diffNegativeColor
+                                    : diffNeutralColor,
+                              fontWeight: 600,
+                            }}
+                          >{ diffMins > 0 ? '+' : '' }
+                            {diffMins} min
+                          </span>
+                        ) : null}
+                      </td>
                       <td style={bodyCellStyle}>
                         <button
                           type="button"
