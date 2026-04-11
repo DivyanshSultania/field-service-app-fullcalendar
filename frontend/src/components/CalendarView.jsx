@@ -153,7 +153,77 @@ export default function CalendarView({
   const [detailsInstructionReplies, setDetailsInstructionReplies] = useState([]);
   const [detailsPayments, setDetailsPayments] = useState([]);
   const [detailsReloadKey, setDetailsReloadKey] = useState(0);
+  /** Keys `c:${id}` / `i:${id}` while PATCH read is in flight */
+  const [detailsReadPending, setDetailsReadPending] = useState({});
 
+  function taskDetailRowIsRead(row) {
+    if (!row) return false;
+    const v = row.is_read ?? row.isRead;
+    return v === 1 || v === true || v === '1';
+  }
+
+  async function markDetailsTaskCommentRead(commentId) {
+    const key = `c:${commentId}`;
+    setDetailsReadPending(p => ({ ...p, [key]: true }));
+    try {
+      const res = await authFetch(`${VITE_KEY}/api/task_comments/${commentId}/read`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isRead: true })
+      });
+      if (!res.ok) {
+        showToast(await getResponseError(res, 'Failed to mark comment read'), '#dc2626');
+        return;
+      }
+      const row = await readJsonOrFallback(res, null);
+      if (row && row.id) {
+        setDetailsComments(prev => prev.map(c => (c.id === commentId ? { ...c, ...row } : c)));
+      } else {
+        setDetailsComments(prev =>
+          prev.map(c => (c.id === commentId ? { ...c, is_read: 1 } : c)));
+      }
+    } catch (e) {
+      showToast(e?.message || 'Failed to mark comment read', '#dc2626');
+    } finally {
+      setDetailsReadPending(p => {
+        const next = { ...p };
+        delete next[key];
+        return next;
+      });
+    }
+  }
+
+  async function markDetailsTaskInstructionRead(instructionId) {
+    const key = `i:${instructionId}`;
+    setDetailsReadPending(p => ({ ...p, [key]: true }));
+    try {
+      const res = await authFetch(`${VITE_KEY}/api/task_instructions/${instructionId}/read`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isRead: true })
+      });
+      if (!res.ok) {
+        showToast(await getResponseError(res, 'Failed to mark instruction read'), '#dc2626');
+        return;
+      }
+      const row = await readJsonOrFallback(res, null);
+      if (row && row.id) {
+        setDetailsInstructionReplies(prev =>
+          prev.map(inst => (inst.id === instructionId ? { ...inst, ...row } : inst)));
+      } else {
+        setDetailsInstructionReplies(prev =>
+          prev.map(inst => (inst.id === instructionId ? { ...inst, is_read: 1 } : inst)));
+      }
+    } catch (e) {
+      showToast(e?.message || 'Failed to mark instruction read', '#dc2626');
+    } finally {
+      setDetailsReadPending(p => {
+        const next = { ...p };
+        delete next[key];
+        return next;
+      });
+    }
+  }
 
   // Modal State
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -1535,8 +1605,26 @@ export default function CalendarView({
                                   background: '#fff'
                                 }}
                               >
-                                <div style={{ fontSize: 13, color: '#111827', whiteSpace: 'pre-wrap' }}>
-                                  {c.comment || ''}
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                                  <div style={{ fontSize: 13, color: '#111827', whiteSpace: 'pre-wrap', flex: 1 }}>
+                                    {c.comment || ''}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="btn"
+                                    disabled={taskDetailRowIsRead(c) || detailsReadPending[`c:${c.id}`]}
+                                    onClick={() => markDetailsTaskCommentRead(c.id)}
+                                    style={{
+                                      flexShrink: 0,
+                                      background: taskDetailRowIsRead(c) ? '#e5e7eb' : '#fde047',
+                                      color: '#713f12',
+                                      border: '1px solid #eab308',
+                                      opacity: taskDetailRowIsRead(c) ? 0.7 : 1,
+                                      cursor: taskDetailRowIsRead(c) ? 'not-allowed' : 'pointer'
+                                    }}
+                                  >
+                                    Read
+                                  </button>
                                 </div>
                                 <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
                                   {c.staff_id ? `Staff: ${staffs.find(s => s.id === c.staff_id)?.name || c.staff_id}` : ''}
@@ -1571,8 +1659,26 @@ export default function CalendarView({
                                 background: '#fff'
                               }}
                             >
-                              <div style={{ fontWeight: 600, color: '#0f172a' }}>
-                                {inst.ques || 'Question'}
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                                <div style={{ fontWeight: 600, color: '#0f172a', flex: 1 }}>
+                                  {inst.ques || 'Question'}
+                                </div>
+                                <button
+                                  type="button"
+                                  className="btn"
+                                  disabled={taskDetailRowIsRead(inst) || detailsReadPending[`i:${inst.id}`]}
+                                  onClick={() => markDetailsTaskInstructionRead(inst.id)}
+                                  style={{
+                                    flexShrink: 0,
+                                    background: taskDetailRowIsRead(inst) ? '#e5e7eb' : '#fde047',
+                                    color: '#713f12',
+                                    border: '1px solid #eab308',
+                                    opacity: taskDetailRowIsRead(inst) ? 0.7 : 1,
+                                    cursor: taskDetailRowIsRead(inst) ? 'not-allowed' : 'pointer'
+                                  }}
+                                >
+                                  Read
+                                </button>
                               </div>
                               <div style={{ marginTop: 6, whiteSpace: 'pre-wrap', color: '#111827' }}>
                                 {inst.reply || '-'}
@@ -4059,7 +4165,7 @@ export default function CalendarView({
             <label><input type="checkbox" checked={currentTask.publish} onChange={e=>setCurrentTask(f=>({...f, publish:e.target.checked}))}/> Publish Event</label>
             <label><input type="checkbox" checked={!!currentTask.isLocation} onChange={e=>setCurrentTask(f=>({...f, isLocation:e.target.checked}))}/> Location</label>
           </div>
-          <label>
+          {/* <label>
             Shift Instructions
             <textarea
               value={currentTask.shift_instructions}
@@ -4067,7 +4173,7 @@ export default function CalendarView({
               rows={3}
               style={{width:'100%',marginTop:4}}
             />
-          </label>
+          </label> */}
           <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
             <button className="btn" onClick={()=>setCreateModalOpen(false)}>Cancel</button>
             <button className="btn primary" onClick={handleCreateEvent}>Create Event</button>
