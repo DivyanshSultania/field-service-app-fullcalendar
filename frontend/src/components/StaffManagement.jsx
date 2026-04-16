@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 import {authFetch} from './../pages/utils';
+import { findDuplicateStaffByEmail } from './../utils/duplicateValidation';
 
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
@@ -17,7 +18,6 @@ function getBackendOrigin(url) {
 
 function buildViewStaffRosterLink(staffMember) {
   if (!staffMember?.id) return '';
-  debugger;
   const key1 = staffMember.roster_token1 || staffMember.key1;
   const key2 = staffMember.roster_token2;
   if (!key1 || !key2) return '';
@@ -57,6 +57,7 @@ export default function StaffManagement() {
   const [editMode, setEditMode] = useState(false);
   const [editStaffId, setEditStaffId] = useState(null);
   const [copyFeedback, setCopyFeedback] = useState('');
+  const [saveError, setSaveError] = useState('');
   const [newStaff, setNewStaff] = useState({
     name: '',
     email: '',
@@ -84,6 +85,7 @@ export default function StaffManagement() {
   function handleAddStaffClick() {
     setEditMode(false);
     setCopyFeedback('');
+    setSaveError('');
     setShowModal(true);
   }
 
@@ -91,6 +93,7 @@ export default function StaffManagement() {
     setEditMode(true);
     setEditStaffId(staff.id);
     setCopyFeedback('');
+    setSaveError('');
     setNewStaff({
       name: staff.name || '',
       email: staff.email || '',
@@ -105,12 +108,14 @@ export default function StaffManagement() {
 
   function handleInputChange(e) {
     const { name, value } = e.target;
+    setSaveError('');
     setNewStaff(prev => ({ ...prev, [name]: value }));
   }
 
   function handleCancel() {
     setShowModal(false);
     setCopyFeedback('');
+    setSaveError('');
     setNewStaff({
       name: '',
       email: '',
@@ -126,6 +131,14 @@ export default function StaffManagement() {
 
   function handleSubmit(e) {
     e.preventDefault();
+    const duplicateStaff = findDuplicateStaffByEmail(staff, newStaff.email, editMode ? editStaffId : null);
+    if (duplicateStaff) {
+      const errorMessage = 'A staff member with this email already exists.';
+      setSaveError(errorMessage);
+      window.showToast?.(errorMessage);
+      return;
+    }
+
     if (editMode) {
       authFetch(`${VITE_KEY}/api/staff/${editStaffId}`, {
         method: 'PUT',
@@ -140,6 +153,7 @@ export default function StaffManagement() {
           setStaff(prev => prev.map(s => (s.id === editStaffId ? updatedStaff : s)));
           setShowModal(false);
           setCopyFeedback('');
+          setSaveError('');
           setNewStaff({
             name: '',
             email: '',
@@ -154,6 +168,7 @@ export default function StaffManagement() {
         })
         .catch(err => {
           console.error(err);
+          setSaveError('Failed to update staff member');
           alert('Failed to update staff member');
         });
     } else {
@@ -170,6 +185,7 @@ export default function StaffManagement() {
           setStaff(prev => [addedStaff, ...prev]);
           setShowModal(false);
           setCopyFeedback('');
+          setSaveError('');
           setNewStaff({
             name: '',
             email: '',
@@ -182,6 +198,7 @@ export default function StaffManagement() {
         })
         .catch(err => {
           console.error(err);
+          setSaveError('Failed to add staff member');
           alert('Failed to add staff member');
         });
     }
@@ -189,7 +206,6 @@ export default function StaffManagement() {
 
   async function handleCopyRosterLink() {
     const currentStaff = staff.find(member => member.id === editStaffId);
-    debugger;
     const rosterLink = buildViewStaffRosterLink(currentStaff);
     if (!rosterLink) {
       setCopyFeedback('Roster link unavailable');
@@ -227,6 +243,18 @@ export default function StaffManagement() {
       }}>
         <h2 style={{ marginTop: 0, marginBottom: 20 }}>{editMode ? 'Edit Staff Member' : 'Add Staff Member'}</h2>
         <form onSubmit={handleSubmit}>
+          {saveError && (
+            <div style={{
+              marginBottom: 16,
+              padding: '10px 12px',
+              borderRadius: 8,
+              background: '#fef2f2',
+              color: '#b91c1c',
+              border: '1px solid #fecaca',
+            }}>
+              {saveError}
+            </div>
+          )}
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', marginBottom: 4 }}>Name</label>
             <input

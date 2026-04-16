@@ -3,6 +3,14 @@ import dayjs from 'dayjs';
 import Modal from '../components/Modal';
 import { authFetch, formatHM } from './utils';
 import { calculateTaskTravelData, getAssignedStaffIds } from '../utils/taskTravel';
+import {
+  DURATION_HOUR_OPTIONS,
+  DURATION_MINUTE_OPTIONS,
+  formatMinutesAsHHMM,
+  parseDurationPartsToMinutes,
+  parseHHMMToMinutes,
+  splitMinutesToDurationParts,
+} from '../utils/duration';
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 const HOMEMAID_LOGO = 'https://pub-ac8edfc52ef04beba837f1804a4abf42.r2.dev/public/homemaid_logo.png';
@@ -581,6 +589,52 @@ export default function IndividualView({
   }
 
   function getBulkActionControl() {
+    function renderBulkDurationControl() {
+      const durationMinutes = parseHHMMToMinutes(bulkValue) ?? 0;
+      const parts = splitMinutesToDurationParts(durationMinutes);
+      const durationInputStyle = {
+        ...controlStyle,
+        width: 70,
+        minWidth: 70,
+        padding: '8px 10px',
+        textAlign: 'center',
+      };
+
+      const updateDurationPart = (part, rawValue) => {
+        const nextHours = part === 'hours' ? rawValue : parts.hours;
+        const nextMinutes = part === 'minutes' ? rawValue : parts.minutes;
+        const nextTotalMinutes = parseDurationPartsToMinutes(nextHours, nextMinutes);
+        if (nextTotalMinutes == null) return;
+        setBulkValue(formatMinutesAsHHMM(nextTotalMinutes));
+      };
+
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <select
+            value={parts.hours}
+            onChange={event => updateDurationPart('hours', event.target.value)}
+            style={durationInputStyle}
+            aria-label="Bulk duration hours"
+          >
+            {DURATION_HOUR_OPTIONS.map(option => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+          <span style={{ color: '#475569', fontWeight: 600 }}>:</span>
+          <select
+            value={parts.minutes}
+            onChange={event => updateDurationPart('minutes', event.target.value)}
+            style={durationInputStyle}
+            aria-label="Bulk duration minutes"
+          >
+            {DURATION_MINUTE_OPTIONS.map(option => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        </div>
+      );
+    }
+
     if (bulkAction === 'individual') {
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -619,17 +673,7 @@ export default function IndividualView({
     }
 
     if (bulkAction === 'duration') {
-      return (
-        <input
-          type="number"
-          min="10"
-          step="5"
-          value={bulkValue}
-          onChange={event => setBulkValue(event.target.value)}
-          style={controlStyle}
-          placeholder="Minutes"
-        />
-      );
+      return renderBulkDurationControl();
     }
 
     if (bulkAction === 'location') {
@@ -710,6 +754,15 @@ export default function IndividualView({
       return;
     }
 
+    const bulkDurationMinutes = bulkAction === 'duration'
+      ? parseHHMMToMinutes(bulkValue)
+      : null;
+
+    if (bulkAction === 'duration' && (bulkDurationMinutes == null || bulkDurationMinutes < 10)) {
+      showToast('Select a valid duration in HH:MM.', '#0f172a');
+      return;
+    }
+
     const selectedTasks = tasks
       .filter(task => selectedTaskIds.includes(task.id))
       .sort((firstTask, secondTask) => {
@@ -780,9 +833,8 @@ export default function IndividualView({
         }
 
         if (bulkAction === 'duration') {
-          const minutes = Math.max(10, Number(bulkValue) || 0);
           patch = {
-            end_time: dayjs(task.start_time).add(minutes, 'minute').toISOString(),
+            end_time: dayjs(task.start_time).add(bulkDurationMinutes, 'minute').toISOString(),
           };
         }
 

@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 import {authFetch} from './../pages/utils';
+import {
+  findDuplicateClientByEmail,
+  findDuplicateClientByPhone,
+} from './../utils/duplicateValidation';
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 
@@ -9,6 +13,7 @@ export default function ClientsManagement() {
   const [showModal, setShowModal] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
+  const [saveError, setSaveError] = useState('');
   const [form, setForm] = useState({
     client_name: '',
     company: '',
@@ -31,6 +36,8 @@ export default function ClientsManagement() {
 
   const openAddModal = () => {
     setEditMode(false);
+    setSelectedClient(null);
+    setSaveError('');
     setForm({
       client_name: '',
       company: '',
@@ -48,6 +55,7 @@ export default function ClientsManagement() {
   const openEditModal = (client) => {
     setEditMode(true);
     setSelectedClient(client);
+    setSaveError('');
     setForm({
       client_name: client.client_name || '',
       company: client.company || '',
@@ -64,11 +72,29 @@ export default function ClientsManagement() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
+    setSaveError('');
     setForm(prev => ({ ...prev, [name]: value }));
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    const currentClientId = editMode ? selectedClient?.id : null;
+    const duplicateEmailClient = findDuplicateClientByEmail(clients, form.email, currentClientId);
+    if (duplicateEmailClient) {
+      const errorMessage = 'A client with this email already exists.';
+      setSaveError(errorMessage);
+      window.showToast?.(errorMessage);
+      return;
+    }
+
+    const duplicatePhoneClient = findDuplicateClientByPhone(clients, form.phone, currentClientId);
+    if (duplicatePhoneClient) {
+      const errorMessage = 'A client with this phone number already exists.';
+      setSaveError(errorMessage);
+      window.showToast?.(errorMessage);
+      return;
+    }
+
     const url = editMode
       ? `${VITE_KEY}/api/clients/${selectedClient.id}`
       : `${VITE_KEY}/api/clients`;
@@ -79,16 +105,25 @@ export default function ClientsManagement() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(form),
     })
-      .then(r => r.json())
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data?.error || 'Failed to save client');
+        return data;
+      })
       .then(data => {
         if (editMode) {
           setClients(prev => prev.map(c => (c.id === data.id ? data : c)));
         } else {
           setClients(prev => [data, ...prev]);
         }
+        setSaveError('');
         setShowModal(false);
       })
-      .catch(err => console.error('Save failed', err));
+      .catch(err => {
+        console.error('Save failed', err);
+        setSaveError(err.message || 'Failed to save client');
+        window.showToast?.(err.message || 'Failed to save client');
+      });
   };
 
   const handleDelete = (id) => {
@@ -111,6 +146,18 @@ export default function ClientsManagement() {
       <div className="client-modal">
         <h2>{editMode ? 'Edit Client' : 'Add New Client'}</h2>
         <form onSubmit={handleSubmit}>
+          {saveError && (
+            <div style={{
+              marginBottom: 16,
+              padding: '10px 12px',
+              borderRadius: 8,
+              background: '#fef2f2',
+              color: '#b91c1c',
+              border: '1px solid #fecaca',
+            }}>
+              {saveError}
+            </div>
+          )}
           <div className="form-grid">
             <div>
               <label>Client Name*</label>
@@ -150,7 +197,10 @@ export default function ClientsManagement() {
           <textarea name="property_information" value={form.property_information} onChange={handleChange}></textarea>
 
           <div className="modal-actions">
-            <button type="button" className="btn cancel" onClick={() => setShowModal(false)}>Cancel</button>
+            <button type="button" className="btn cancel" onClick={() => {
+              setSaveError('');
+              setShowModal(false);
+            }}>Cancel</button>
             <button type="submit" className="btn primary">{editMode ? 'Update Client' : 'Create Client'}</button>
           </div>
         </form>
