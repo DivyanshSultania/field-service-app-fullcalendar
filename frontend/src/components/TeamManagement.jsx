@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom';
 import {authFetch} from './../pages/utils';
+import { findDuplicateTeamByName } from './../utils/duplicateValidation';
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 
@@ -9,6 +10,7 @@ export default function TeamManagement() {
   const [staff, setStaff] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [form, setForm] = useState({
     name: '',
     description: '',
@@ -25,6 +27,8 @@ export default function TeamManagement() {
 
   const handleAdd = () => {
     setEditMode(false);
+    setEditId(null);
+    setSaveError('');
     setShowModal(true);
     setForm({ name: '', description: '', status: 'Active', supervisor_id: '', member_ids: [] });
   };
@@ -34,6 +38,7 @@ export default function TeamManagement() {
     const data = await res.json();
     setEditMode(true);
     setEditId(id);
+    setSaveError('');
     setShowModal(true);
     setForm({
       name: data.name,
@@ -46,25 +51,43 @@ export default function TeamManagement() {
 
   const handleSave = async (e) => {
     e.preventDefault();
+    const duplicateTeam = findDuplicateTeamByName(teams, form.name, editMode ? editId : null);
+    if (duplicateTeam) {
+      const errorMessage = 'A team with this name already exists.';
+      setSaveError(errorMessage);
+      window.showToast?.(errorMessage);
+      return;
+    }
+
     const url = editMode
       ? `${VITE_KEY}/api/teams/${editId}`
       : `${VITE_KEY}/api/teams`;
     const method = editMode ? 'PUT' : 'POST';
 
-    const res = await authFetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(form),
-    });
-    const data = await res.json();
+    try {
+      const res = await authFetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json().catch(() => ({}));
 
-    debugger;
-    if (editMode) {
-      setTeams(prev => prev.map(t => (t.id === editId ? data : t)));
-    } else {
-      setTeams(prev => [data, ...prev]);
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to save team');
+      }
+
+      if (editMode) {
+        setTeams(prev => prev.map(t => (t.id === editId ? data : t)));
+      } else {
+        setTeams(prev => [data, ...prev]);
+      }
+      setSaveError('');
+      setShowModal(false);
+    } catch (error) {
+      console.error('Team save failed', error);
+      setSaveError(error.message || 'Failed to save team');
+      window.showToast?.(error.message || 'Failed to save team');
     }
-    setShowModal(false);
   };
 
   const handleDelete = async (id) => {
@@ -74,6 +97,7 @@ export default function TeamManagement() {
   };
 
   const handleMemberToggle = (id) => {
+    setSaveError('');
     setForm(prev => ({
       ...prev,
       member_ids: prev.member_ids.includes(id)
@@ -102,20 +126,41 @@ export default function TeamManagement() {
         <h2 style={{ marginTop: 0, marginBottom: 20 }}>{editMode ? 'Edit Team' : 'Add New Team'}</h2>
         
           <form onSubmit={handleSave}>
+            {saveError && (
+              <div style={{
+                marginBottom: 16,
+                padding: '10px 12px',
+                borderRadius: 8,
+                background: '#fef2f2',
+                color: '#b91c1c',
+                border: '1px solid #fecaca',
+              }}>
+                {saveError}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: '20px' }}>
               <div style={{ flex: 1 }}>
                 <label style={{ display: 'block', marginBottom: 4 }}>Team Name *</label>
-                <input type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required 
+                <input type="text" value={form.name} onChange={e => {
+                  setSaveError('');
+                  setForm({ ...form, name: e.target.value });
+                }} required 
                 style={{ width: '100%', padding: '8px', boxSizing: 'border-box', borderRadius: '8px', border: '1px solid #e6e7f0' }}
                 />
 
                 <label>Description</label>
-                <textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} 
+                <textarea value={form.description} onChange={e => {
+                  setSaveError('');
+                  setForm({ ...form, description: e.target.value });
+                }} 
                 style={{ width: '100%', padding: '8px', boxSizing: 'border-box', borderRadius: '8px', border: '1px solid #e6e7f0' }}
                 />
 
                 <label>Status *</label>
-                <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}
+                <select value={form.status} onChange={e => {
+                  setSaveError('');
+                  setForm({ ...form, status: e.target.value });
+                }}
                 style={{ width: '100%', padding: '8px', boxSizing: 'border-box', borderRadius: '8px', border: '1px solid #e6e7f0' }}>
                   <option>Active</option>
                   <option>Inactive</option>
@@ -124,7 +169,10 @@ export default function TeamManagement() {
                 <label>Team Supervisor</label>
                 <select
                   value={form.supervisor_id}
-                  onChange={e => setForm({ ...form, supervisor_id: e.target.value })}
+                  onChange={e => {
+                    setSaveError('');
+                    setForm({ ...form, supervisor_id: e.target.value });
+                  }}
                   style={{ width: '100%', padding: '8px', boxSizing: 'border-box', borderRadius: '8px', border: '1px solid #e6e7f0' }}
                 >
                   <option value="">Select a supervisor</option>
@@ -162,7 +210,10 @@ export default function TeamManagement() {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: 20 }}>
-              <button type="button" className="btn" onClick={() => setShowModal(false)} style={{ background: '#e0e0e0', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer' }}>Cancel</button>
+              <button type="button" className="btn" onClick={() => {
+                setSaveError('');
+                setShowModal(false);
+              }} style={{ background: '#e0e0e0', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer' }}>Cancel</button>
               <button type="submit" className="btn primary" style={{ background: '#4F46E5', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer' }}>{editMode ? 'Update Team' : 'Create Team'}</button>
             </div>
           </form>

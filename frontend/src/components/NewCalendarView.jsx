@@ -356,11 +356,11 @@ export default function CalendarView({tasks = [], filter = { type: 'staff', ids:
         extendedProps: { ...fullTask },
       });
   
-      // Close and open edit modal
+      // Close and open edit modal (Client tab first for client / property details)
       setCreateModalOpen(false);
       setEditTaskId(fullTask.id);
       setEditTask(fullTask);
-      setEditTabs('Shift');
+      setEditTabs('Client');
       setEditModalOpen(true);
     } catch (e) {
       console.error('Create task error', e);

@@ -38,13 +38,19 @@ function normalizeTask(task) {
     ? Math.max(0, dayjs(task.stopped_at).diff(dayjs(task.started_at), 'minute'))
     : 0;
 
+  const computedPay = Math.min(scheduledMinutes, loggedMinutes);
+  const storedPay = task?.pay_length_minutes;
+  const payMinutes = (storedPay != null && storedPay !== '' && Number.isFinite(Number(storedPay)))
+    ? Math.max(0, Math.round(Number(storedPay)))
+    : computedPay;
+
   return {
     ...task,
     log_start_time: task?.started_at || null,
     log_end_time: task?.stopped_at || null,
     scheduled_length_minutes: scheduledMinutes,
     log_length_minutes: loggedMinutes,
-    pay_length_minutes: Math.min(scheduledMinutes, loggedMinutes),
+    pay_length_minutes: payMinutes,
     task_team_members: Array.isArray(task?.task_team_members) ? task.task_team_members : [],
     task_team_members_name: Array.isArray(task?.task_team_members_name) ? task.task_team_members_name : [],
     task_staff_travel: Array.isArray(task?.task_staff_travel) ? task.task_staff_travel : [],

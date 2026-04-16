@@ -79,10 +79,16 @@ function getClientAssignmentRows(task) {
       ),
       scheduled_length_value: parseMinutes(task?.scheduled_length_minutes),
       log_length_value: parseMinutes(task?.log_length_minutes),
-      pay_length_value: Math.min(
-        parseMinutes(task?.scheduled_length_minutes),
-        parseMinutes(task?.log_length_minutes)
-      ),
+      pay_length_value: (() => {
+        const p = task?.pay_length_minutes;
+        if (p != null && p !== '' && Number.isFinite(Number(p))) {
+          return Math.max(0, Math.round(Number(p)));
+        }
+        return Math.min(
+          parseMinutes(task?.scheduled_length_minutes),
+          parseMinutes(task?.log_length_minutes)
+        );
+      })(),
     });
   };
 
