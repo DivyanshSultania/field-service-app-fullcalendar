@@ -103,7 +103,13 @@ async function readJsonOrFallback(response, fallback) {
   }
 }
 
-export default function Schedule({ onOpenTask }) {
+export default function Schedule({
+  onOpenTask,
+  staffs = [],
+  clients = [],
+  teams = [],
+  locations = [],
+}) {
   const [defaultRange] = useState(() => getDefaultScheduleRange());
   const [filters, setFilters] = useState(() => ({
     from: defaultRange.from,
@@ -120,64 +126,8 @@ export default function Schedule({ onOpenTask }) {
     viewType: 'individual',
   }));
   const [tasks, setTasks] = useState([]);
-  const [staffs, setStaffs] = useState([]);
-  const [clients, setClients] = useState([]);
-  const [teams, setTeams] = useState([]);
-  const [locations, setLocations] = useState([]);
   const [teamMembers, setTeamMembers] = useState([]);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadLookups() {
-      try {
-        const [
-          staffRes,
-          clientsRes,
-          teamsRes,
-          locationsRes,
-          teamMembersRes,
-        ] = await Promise.all([
-          authFetch(`${VITE_KEY}/api/staff`),
-          authFetch(`${VITE_KEY}/api/clients`),
-          authFetch(`${VITE_KEY}/api/teams`),
-          authFetch(`${VITE_KEY}/api/locations`),
-          authFetch(`${VITE_KEY}/api/team_members`),
-        ]);
-
-        const [
-          nextStaffs,
-          nextClients,
-          nextTeams,
-          nextLocations,
-          nextTeamMembers,
-        ] = await Promise.all([
-          readJsonOrFallback(staffRes, []),
-          readJsonOrFallback(clientsRes, []),
-          readJsonOrFallback(teamsRes, []),
-          readJsonOrFallback(locationsRes, []),
-          readJsonOrFallback(teamMembersRes, []),
-        ]);
-
-        if (cancelled) return;
-
-        setStaffs(Array.isArray(nextStaffs) ? nextStaffs : []);
-        setClients(Array.isArray(nextClients) ? nextClients : []);
-        setTeams(Array.isArray(nextTeams) ? nextTeams : []);
-        setLocations(Array.isArray(nextLocations) ? nextLocations : []);
-        setTeamMembers(Array.isArray(nextTeamMembers) ? nextTeamMembers : []);
-      } catch (error) {
-        console.error('Failed to load schedule lookups', error);
-      }
-    }
-
-    loadLookups();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   async function fetchSchedule(nextFilters = filters) {
     const effectiveFilters = getEffectiveFilters(nextFilters, defaultRange);
@@ -194,7 +144,14 @@ export default function Schedule({ onOpenTask }) {
         from: effectiveFilters.from,
         to: dayjs(effectiveFilters.to).add(1, 'day').format('YYYY-MM-DD'),
       });
-      const response = await authFetch(`${VITE_KEY}/api/tasks?${params.toString()}`);
+
+      const [response, teamMembersRes] = await Promise.all([
+        authFetch(`${VITE_KEY}/api/tasks?${params.toString()}`),
+        authFetch(`${VITE_KEY}/api/team_members`),
+      ]);
+
+      const nextTeamMembers = await readJsonOrFallback(teamMembersRes, []);
+      setTeamMembers(Array.isArray(nextTeamMembers) ? nextTeamMembers : []);
 
       if (!response.ok) {
         const errorBody = await readJsonOrFallback(response, {});

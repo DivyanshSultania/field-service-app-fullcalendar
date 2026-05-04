@@ -15,6 +15,7 @@ function AuthenticatedApp({ user, onLogout }) {
     const [tasks, setTasks] = useState([]);
     const [teams, setTeams] = useState([]);
     const [clients, setClients] = useState([]);
+    const [locations, setLocations] = useState([]);
     const [filter, setFilter] = useState({ type: 'staff', ids: [], hiddenDays: [] });
     const [view, setView] = useState('calendar');
     const [taskOpenRequest, setTaskOpenRequest] = useState(null);
@@ -58,10 +59,30 @@ function AuthenticatedApp({ user, onLogout }) {
       };
   
     useEffect(() => {
-      authFetch(`${VITE_KEY}/api/staff`).then(setStaff).catch(()=>{});
-      // authFetch(`${VITE_KEY}/api/tasks`).then(setTasks).catch(()=>{});
-      authFetch(`${VITE_KEY}/api/teams`).then(setTeams).catch(()=>{});
-      authFetch(`${VITE_KEY}/api/clients`).then(setClients).catch(()=>{});
+      let cancelled = false;
+
+      async function loadStaticLookups() {
+        try {
+          const [s, t, c, l] = await Promise.all([
+            authFetch(`${VITE_KEY}/api/staff`),
+            authFetch(`${VITE_KEY}/api/teams`),
+            authFetch(`${VITE_KEY}/api/clients`),
+            authFetch(`${VITE_KEY}/api/locations`),
+          ]);
+          if (cancelled) return;
+          setStaff(Array.isArray(s) ? s : []);
+          setTeams(Array.isArray(t) ? t : []);
+          setClients(Array.isArray(c) ? c : []);
+          setLocations(Array.isArray(l) ? l : []);
+        } catch (e) {
+          console.error('Failed to load lookups', e);
+        }
+      }
+
+      loadStaticLookups();
+      return () => {
+        cancelled = true;
+      };
     }, []);
   
     function renderView() {
@@ -84,6 +105,10 @@ function AuthenticatedApp({ user, onLogout }) {
                 });
                 setView('calendar');
               }}
+              staffs={staff}
+              clients={clients}
+              teams={teams}
+              locations={locations}
             />
           );
         default:
@@ -95,6 +120,10 @@ function AuthenticatedApp({ user, onLogout }) {
               onHiddenDaysChange={hiddenDays =>
                 setFilter(prev => ({ ...prev, hiddenDays }))
               }
+              lookupStaff={staff}
+              lookupTeams={teams}
+              lookupClients={clients}
+              lookupLocations={locations}
             />
           );
       }

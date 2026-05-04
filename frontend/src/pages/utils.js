@@ -4,6 +4,14 @@ export const minutesBetween = (a, b) =>
 export const formatHM = mins =>
   `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
 
+const getBrowserTimezone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch {
+    return '';
+  }
+};
+
 
 // const authFetch = async (url, options = {}) => {
 //   const token = localStorage.getItem("token");
@@ -26,15 +34,20 @@ export const formatHM = mins =>
 // };
   
 export const authFetch = async function (url, obj = {}) {
-  if (!obj.headers) {
-    obj.headers = {};
+  const token = localStorage.getItem("token");
+  const headers = new Headers(obj.headers || {});
+  const browserTimezone = getBrowserTimezone();
+
+  headers.set('Authorization', `Bearer ${token}`);
+
+  if (browserTimezone) {
+    headers.set('X-Timezone', browserTimezone);
   }
 
-  const token = localStorage.getItem("token");
-
-  obj.headers['Authorization'] = `Bearer ${token}`;
-
-  const res = await fetch(url, obj);
+  const res = await fetch(url, {
+    ...obj,
+    headers,
+  });
 
   if (res.status === 401) {
     localStorage.clear();

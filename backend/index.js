@@ -5,7 +5,20 @@ import bcrypt from 'bcryptjs'
 import { SignJWT } from 'jose'
 
 import { jwtVerify } from 'jose'
-import dayjs from 'dayjs';
+import { generateRecurringDates, normalizeRecurringWeekdays } from './recurring.js';
+import {
+	buildUtcRangeFromLocalDates,
+	combineLocalDateAndTimeToUtcIso,
+	compareLocalDays,
+	dayjs,
+	formatInTimezone,
+	getCurrentWeekUtcRange,
+	getUtcEndOfLocalDay,
+	getUtcEndOfPreviousLocalDay,
+	getUtcStartOfLocalDay,
+	getRequestTimezone,
+	toZonedDateTime
+} from './timezone.js';
 
 const uuidv4 = () => crypto.randomUUID();
 const homemaidLogo = 'https://pub-ac8edfc52ef04beba837f1804a4abf42.r2.dev/public/homemaid_logo.png';
@@ -67,6 +80,47 @@ const getSql = (db, sql, params = []) =>
 
 const runSql = (db, sql, params = []) =>
 	db.prepare(sql).bind(...normalizeParams(params)).run()
+
+/**
+ * Minutes between two ISO/datetime strings; null if invalid or negative.
+ */
+const diffMinutes = (start, end) => {
+	if (!start || !end) return null
+	const m = dayjs(end).diff(dayjs(start), 'minute')
+	if (!Number.isFinite(m) || m < 0) return null
+	return Math.floor(m)
+}
+
+const diffClockMinutes = (startTimeText, endTimeText) => {
+	if (!startTimeText || !endTimeText) return null
+
+	const [startHour, startMinute] = String(startTimeText).split(':').map(Number)
+	const [endHour, endMinute] = String(endTimeText).split(':').map(Number)
+
+	if (
+		![startHour, startMinute, endHour, endMinute].every(Number.isFinite)
+	) {
+		return null
+	}
+
+	const startTotal = startHour * 60 + startMinute
+	const endTotal = endHour * 60 + endMinute
+	const diff = endTotal - startTotal
+
+	return diff < 0 ? diff + 24 * 60 : diff
+}
+
+/**
+ * Pay minutes: min(scheduled, log) when both exist; otherwise whichever side exists.
+ */
+const computePayLengthMinutes = ({ start_time, end_time, started_at, stopped_at }) => {
+	const scheduled = diffMinutes(start_time, end_time)
+	const logged = diffMinutes(started_at, stopped_at)
+	if (scheduled != null && logged != null) return Math.min(scheduled, logged)
+	if (scheduled != null) return scheduled
+	if (logged != null) return logged
+	return null
+}
 
 /* -----------------------------
    🧪 Health
@@ -403,9 +457,10 @@ app.get('/api/seed', authMiddleware, async c => {
 		);
 
 		// --- Tasks ---
-		const now = new Date();
-		const startTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 30).toISOString();
-		const endTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 30).toISOString();
+		const appTimezone = getRequestTimezone(c.req, c.env);
+		const localNow = dayjs().tz(appTimezone);
+		const startTime = localNow.hour(7).minute(30).second(0).millisecond(0).utc().toISOString();
+		const endTime = localNow.hour(9).minute(30).second(0).millisecond(0).utc().toISOString();
 		const taskId = uuidv4();
 		await runSql(
 			c.env.DB,
@@ -480,9 +535,9 @@ app.get('/api/seed', authMiddleware, async c => {
 		await runSql(
 			c.env.DB,
 			`INSERT OR IGNORE INTO task_instructions
-       (id, task_id, ques, resp_type, reply, replied_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-			[uuidv4(), taskId, 'Was the mop replaced?', 'yes_no', 'Yes', now.toISOString()]
+       (id, task_id, ques, resp_type, reply, replied_at, is_read)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			[uuidv4(), taskId, 'Was the mop replaced?', 'yes_no', 'Yes', now.toISOString(), 0]
 		);
 
 		return c.json({ ok: true, message: 'Seeded all data successfully.' });
@@ -840,7 +895,7 @@ app.post('/api/clients', authMiddleware, async context => {
 		const { client_name, company, email, phone, abn, acn, client_instruction, client_information, property_information } = body;
 		await runSql(
 			context.env.DB,
-			'INSERT INTO clients (id, client_name, company, email, phone, abn, acn, client_instruction, client_information, property_information) VALUES (?,?,?,?,?,?,?,?)',
+			'INSERT INTO clients (id, client_name, company, email, phone, abn, acn, client_instruction, client_information, property_information) VALUES (?,?,?,?,?,?,?,?,?,?)',
 			[id, client_name, company, email, phone, abn, acn, client_instruction, client_information, property_information]
 		);
 
@@ -950,17 +1005,24 @@ app.get('/api/tasks', authMiddleware, async context => {
 	try {
 
 		const { from, to } = context.req.query();
+		const appTimezone = getRequestTimezone(context.req, context.env);
 		const where = [];
 		const params = [];
+		const { fromUtc, toUtcExclusive } = buildUtcRangeFromLocalDates({
+			from,
+			to,
+			timezoneName: appTimezone,
+			inclusiveTo: false
+		});
 
-		if (from) {
-		where.push('date(t.start_time) >= date(?)');
-		params.push(from);
+		if (fromUtc) {
+			where.push('t.start_time >= ?');
+			params.push(fromUtc);
 		}
 
-		if (to) {
-		where.push('date(t.start_time) < date(?)');
-		params.push(to);
+		if (toUtcExclusive) {
+			where.push('t.start_time < ?');
+			params.push(toUtcExclusive);
 		}
 
 		let rows = await allSql(
@@ -1050,6 +1112,7 @@ app.post('/api/tasks', authMiddleware, async context => {
 			'start_time', 'end_time', 'publish', 'shift_instructions', 'color',
 			'isLocation',
 			'started_at', 'stopped_at', 'travel_from', 'travel_dist', 'travel_duration',
+			'pay_length_minutes',
 			'payment_type', 'payment_amount', 'payment_date',
 			'task_client_name', 'task_client_company', 'task_client_email', 'task_client_phone',
 			'task_client_abn', 'task_client_acn', 'task_client_instruction',
@@ -1093,6 +1156,7 @@ app.put('/api/tasks/:id', authMiddleware, async context => {
 			'start_time', 'end_time', 'publish', 'shift_instructions', 'color',
 			'isLocation',
 			'started_at', 'stopped_at', 'travel_from', 'travel_dist', 'travel_duration',
+			'pay_length_minutes',
 			'payment_type', 'payment_amount', 'payment_date',
 			'task_client_name', 'task_client_company', 'task_client_email', 'task_client_phone',
 			'task_client_abn', 'task_client_acn', 'task_client_instruction',
@@ -1308,16 +1372,31 @@ app.post('/api/tasks/:id/end', authMiddleware, async context => {
 		console.log('In end task ' + taskId, JSON.stringify(body));
 
 		const { lat, lng } = body || {};
-		const task = await getSql(context.env.DB, 'SELECT id FROM tasks WHERE id = ?', [taskId]);
+		const task = await getSql(
+			context.env.DB,
+			'SELECT id, start_time, end_time, started_at FROM tasks WHERE id = ?',
+			[taskId]
+		);
 		if (!task) {
 			return context.json({ error: 'Task not found' }, 404);
 		}
 		const now = new Date().toISOString();
+		const payMins = computePayLengthMinutes({
+			start_time: task.start_time,
+			end_time: task.end_time,
+			started_at: task.started_at,
+			stopped_at: now
+		});
+
+		console.log('In end task ' + taskId, 'payMins', payMins);
 		await runSql(
 			context.env.DB,
-			'UPDATE tasks SET stopped_at = ?, end_lat = ?, end_lng = ? WHERE id = ?',
-			[now, lat ?? null, lng ?? null, taskId]
+			'UPDATE tasks SET stopped_at = ?, end_lat = ?, end_lng = ?, pay_length_minutes = ? WHERE id = ?',
+			[now, lat ?? null, lng ?? null, payMins, taskId]
 		);
+
+		console.log('In end task ' + taskId, 'payMins', typeof(payMins));
+
 		const updated = await getSql(context.env.DB, 'SELECT * FROM tasks WHERE id = ?', [taskId]);
 		return context.json({ ok: true, task: updated });
 	} catch (e) {
@@ -1368,8 +1447,15 @@ app.post('/api/task_instructions', authMiddleware, async context => {
 	try {
 		const id = uuidv4();
 		const body = await context.req.json();
-		const fields = ['task_id', 'ques', 'resp_type', 'reply', 'replied_at'];
-		const values = fields.map(k => body[k] || null);
+		const fields = ['task_id', 'ques', 'resp_type', 'reply', 'replied_at', 'is_read'];
+		const values = fields.map(k => {
+			if (k === 'is_read') {
+				const v = body[k];
+				if (v === true || v === 1 || v === '1') return 1;
+				return 0;
+			}
+			return body[k] || null;
+		});
 
 		await runSql(
 			context.env.DB,
@@ -1389,11 +1475,19 @@ app.post('/api/task_instructions', authMiddleware, async context => {
 
 app.put('/api/task_instructions/:id', authMiddleware, async context => {
 	try {
-		const fields = ['task_id', 'ques', 'resp_type', 'reply', 'replied_at'];
+		const fields = ['task_id', 'ques', 'resp_type', 'reply', 'replied_at', 'is_read'];
 		const body = await context.req.json();
 
 		const setClause = fields.map(f => `${f}=?`).join(', ');
-		const values = fields.map(k => body[k] || null);
+		const values = fields.map(k => {
+			if (k === 'is_read') {
+				const v = body[k];
+				if (v === true || v === 1 || v === '1') return 1;
+				if (v === false || v === 0 || v === '0') return 0;
+				return v == null ? 0 : 1;
+			}
+			return body[k] || null;
+		});
 
 		await runSql(context.env.DB, `UPDATE task_instructions SET ${setClause} WHERE id=?`, [...values, context.req.param().id]);
 
@@ -1418,7 +1512,7 @@ app.put('/api/taskinstructions/bulk-update', authMiddleware, async context => {
 			return context.json({ error: 'Request body must be an array' }, 400);
 		}
 
-		const fields = ['task_id', 'ques', 'resp_type', 'reply', 'replied_at'];
+		const fields = ['task_id', 'ques', 'resp_type', 'reply', 'replied_at', 'is_read'];
 
 		for (let instructionObj of body) {
 
@@ -1433,7 +1527,15 @@ app.put('/api/taskinstructions/bulk-update', authMiddleware, async context => {
 			if (updateFields.length === 0) continue;
 
 			const setClause = updateFields.map(f => `${f}=?`).join(', ');
-			const values = updateFields.map(f => instructionObj[f]);
+			const values = updateFields.map(f => {
+				if (f === 'is_read') {
+					const v = instructionObj[f];
+					if (v === true || v === 1 || v === '1') return 1;
+					if (v === false || v === 0 || v === '0') return 0;
+					return 0;
+				}
+				return instructionObj[f];
+			});
 
 			await runSql(
 				context.env.DB,
@@ -1444,6 +1546,35 @@ app.put('/api/taskinstructions/bulk-update', authMiddleware, async context => {
 
 		return context.json({ success: true });
 
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+/**
+ * Set is_read on a task instruction (body: { isRead } or { is_read }, default mark read).
+ */
+app.patch('/api/task_instructions/:id/read', authMiddleware, async context => {
+	try {
+		const id = context.req.param().id;
+		let body = {};
+		try {
+			body = await context.req.json();
+		} catch {
+			body = {};
+		}
+		const raw = body.isRead !== undefined ? body.isRead : body.is_read;
+		const isRead =
+			raw === false || raw === 0 || raw === '0' || raw === 'false' ? 0 : 1;
+
+		const existing = await getSql(context.env.DB, 'SELECT id FROM task_instructions WHERE id = ?', [id]);
+		if (!existing) {
+			return context.json({ error: 'Task instruction not found' }, 404);
+		}
+
+		await runSql(context.env.DB, 'UPDATE task_instructions SET is_read = ? WHERE id = ?', [isRead, id]);
+		const row = await getSql(context.env.DB, 'SELECT * FROM task_instructions WHERE id = ?', [id]);
+		return context.json(row);
 	} catch (e) {
 		return context.json({ error: e.message }, 500);
 	}
@@ -1539,10 +1670,11 @@ app.delete('/api/recurring_setting/:id', authMiddleware, async context => {
 		const recId = context.req.param().id;
 		const body = await context.req.json().catch(() => ({}));
 		const requestedDate = body?.date || body?.from_date || null;
+		const appTimezone = getRequestTimezone(context.req, context.env);
 		const changeFromIso = requestedDate
-			? (String(requestedDate).includes('T') ? dayjs(requestedDate).toISOString() : dayjs(requestedDate).startOf('day').toISOString())
-			: dayjs().startOf('day').toISOString();
-		const closeDateBeforeChange = dayjs(changeFromIso).subtract(1, 'day').endOf('day').toISOString();
+			? getUtcStartOfLocalDay(requestedDate, appTimezone)
+			: getUtcStartOfLocalDay(dayjs().tz(appTimezone), appTimezone);
+		const closeDateBeforeChange = getUtcEndOfPreviousLocalDay(changeFromIso, appTimezone);
 
 		let futureTasks = await allSql(
 			context.env.DB,
@@ -1569,13 +1701,16 @@ app.delete('/api/recurring_setting/:id', authMiddleware, async context => {
 		);
 		remainingTasks = remainingTasks.results || [];
 		const firstRemainingTask = remainingTasks[0] || null;
+		const closeDateComparison = firstRemainingTask
+			? compareLocalDays(closeDateBeforeChange, firstRemainingTask.start_time, appTimezone)
+			: null;
 		const shouldDeleteRecurringSetting =
 			!firstRemainingTask ||
-			dayjs(closeDateBeforeChange).isSame(dayjs(firstRemainingTask.start_time), 'day') ||
-			dayjs(closeDateBeforeChange).isBefore(dayjs(firstRemainingTask.start_time), 'day');
+			closeDateComparison === 0 ||
+			closeDateComparison === -1;
 
 		if (shouldDeleteRecurringSetting) {
-		await runSql(context.env.DB, 'DELETE FROM recurring_task_settings WHERE id = ?', [recId]);
+			await runSql(context.env.DB, 'DELETE FROM recurring_task_settings WHERE id = ?', [recId]);
 		} else {
 			await runSql(
 				context.env.DB,
@@ -1595,6 +1730,7 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 	try {
 		const recId = context.req.param().id;
 		// let transactionStarted = false;
+		const appTimezone = getRequestTimezone(context.req, context.env);
 
 		const body = await context.req.json();
 
@@ -1607,26 +1743,16 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 			client_fields,
 			new_start_time,
 			new_end_time,
+			duration_minutes,
 			location_id
 		} = body;
 
 		const requestedDate = date || from_date;
 		const changeFromIso = requestedDate
-			? (String(requestedDate).includes('T') ? dayjs(requestedDate).toISOString() : dayjs(requestedDate).startOf('day').toISOString())
-			: dayjs().startOf('day').toISOString();
+			? getUtcStartOfLocalDay(requestedDate, appTimezone)
+			: getUtcStartOfLocalDay(dayjs().tz(appTimezone), appTimezone);
 
-		let tasks = await allSql(
-			context.env.DB,
-			`SELECT id FROM tasks
-			WHERE recurring_settings = ?
-			AND start_time >= ?
-			ORDER BY start_time`,
-			[recId, changeFromIso]
-		);
-
-		tasks = tasks.results || [];
-
-		let existingSetting = await getSql(
+		const existingSetting = await getSql(
 			context.env.DB,
 			'SELECT * FROM recurring_task_settings WHERE id=?',
 			[recId]
@@ -1636,21 +1762,46 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 			return context.json({ error: 'Recurring task settings not found' }, 404);
 		}
 
+		/** Only shifts not yet finished (no stopped_at) are changed by recurring bulk updates. */
+		const notCompletedSql = `(stopped_at IS NULL OR stopped_at = '')`;
+
+		let tasks = await allSql(
+			context.env.DB,
+			`SELECT id FROM tasks
+			WHERE recurring_settings = ?
+			AND start_time >= ?
+			AND ${notCompletedSql}
+			ORDER BY start_time`,
+			[recId, changeFromIso]
+		);
+
+		tasks = tasks.results || [];
+
+		if (tasks.length === 0) {
+			return context.json({ ok: true, updated: 0 });
+		}
+
 		// transactionStarted = true;
 
 		// Compute updated details/task_length for the NEW recurring_task_settings row.
 		let newTaskLength = existingSetting.task_length;
-		if (new_start_time && new_end_time) {
-		const [sh, sm] = new_start_time.split(':').map(Number);
-		const [eh, em] = new_end_time.split(':').map(Number);
-		const lengthMinutes = dayjs()
-			.hour(eh)
-			.minute(em)
-			.diff(dayjs().hour(sh).minute(sm), 'minute');
+		const durationMinutesNum =
+			duration_minutes != null && duration_minutes !== ''
+				? Math.floor(Number(duration_minutes))
+				: null;
+		const hasDurationUpdate =
+			durationMinutesNum != null &&
+			Number.isFinite(durationMinutesNum) &&
+			durationMinutesNum > 0;
 
-		if (!Number.isNaN(lengthMinutes)) {
-			newTaskLength = String(lengthMinutes);
-		}
+		if (hasDurationUpdate) {
+			newTaskLength = String(durationMinutesNum);
+		} else if (new_start_time && new_end_time) {
+			const lengthMinutes = diffClockMinutes(new_start_time, new_end_time);
+
+			if (lengthMinutes != null) {
+				newTaskLength = String(lengthMinutes);
+			}
 		}
 
 		let newDetails = existingSetting.details || "";
@@ -1713,7 +1864,8 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 		await runSql(
 			context.env.DB,
 			`UPDATE tasks SET recurring_settings=?
-			WHERE recurring_settings=? AND start_time >= ?`,
+			WHERE recurring_settings=? AND start_time >= ?
+			AND ${notCompletedSql}`,
 			[newRecId, recId, changeFromIso]
 		);
 
@@ -1726,12 +1878,15 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 		);
 		remainingTasks = remainingTasks.results || [];
 
-		const closeDateBeforeChange = dayjs(changeFromIso).subtract(1, 'day').endOf('day').toISOString();
+		const closeDateBeforeChange = getUtcEndOfPreviousLocalDay(changeFromIso, appTimezone);
 		const firstRemainingTask = remainingTasks[0] || null;
+		const closeDateComparison = firstRemainingTask
+			? compareLocalDays(closeDateBeforeChange, firstRemainingTask.start_time, appTimezone)
+			: null;
 		const shouldDeleteRecurringSetting =
 			!firstRemainingTask ||
-			dayjs(closeDateBeforeChange).isSame(dayjs(firstRemainingTask.start_time), 'day') ||
-			dayjs(closeDateBeforeChange).isBefore(dayjs(firstRemainingTask.start_time), 'day');
+			closeDateComparison === 0 ||
+			closeDateComparison === -1;
 
 		if (shouldDeleteRecurringSetting) {
 			await runSql(context.env.DB, 'DELETE FROM recurring_task_settings WHERE id = ?', [recId]);
@@ -1817,7 +1972,26 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 				);
 			}
 
-			if (new_start_time && new_end_time) {
+			if (hasDurationUpdate) {
+				let existingTask = await getSql(
+					context.env.DB,
+					'SELECT start_time FROM tasks WHERE id=?',
+					[taskId]
+				);
+
+				if (existingTask?.start_time) {
+					const existingStartLocal = toZonedDateTime(existingTask.start_time, appTimezone);
+					if (existingStartLocal) {
+						const localEnd = existingStartLocal.add(durationMinutesNum, 'minute');
+						const updatedEnd = localEnd.utc().toISOString();
+						await runSql(
+							context.env.DB,
+							'UPDATE tasks SET end_time=? WHERE id=?',
+							[updatedEnd, taskId]
+						);
+					}
+				}
+			} else if (new_start_time && new_end_time) {
 				// Fetch existing task times (date + time)
 				let existingTask = await getSql(
 					context.env.DB,
@@ -1826,52 +2000,45 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 				);
 
 				if (existingTask?.start_time && existingTask?.end_time) {
+					const existingStartLocal = toZonedDateTime(existingTask.start_time, appTimezone);
+					const startDateText = existingStartLocal?.format('YYYY-MM-DD');
+					const endDayOffset = new_end_time < new_start_time ? 1 : 0;
+					const endDateText = existingStartLocal
+						? existingStartLocal.add(endDayOffset, 'day').format('YYYY-MM-DD')
+						: null;
 
-					const [startHour, startMinute] = new_start_time.split(':').map(Number);
-					const [endHour, endMinute] = new_end_time.split(':').map(Number);
+					const updatedStart = combineLocalDateAndTimeToUtcIso({
+						dateValue: startDateText,
+						timeText: new_start_time,
+						timezoneName: appTimezone
+					});
+					const updatedEnd = combineLocalDateAndTimeToUtcIso({
+						dateValue: endDateText,
+						timeText: new_end_time,
+						timezoneName: appTimezone
+					});
 
-					let d = new Date(existingTask.start_time)
-					d.setHours(startHour, startMinute, 0, 0)
-					const updatedStart = d.toISOString()
-
-					//   const updatedStart = startDate
-					//     .hour(startHour)
-					//     .minute(startMinute)
-					//     .second(0)
-					//     .toISOString();
-
-					let e = new Date(existingTask.end_time)
-					e.setHours(endHour, endMinute, 0, 0)
-					const updatedEnd = d.toISOString()
-
-					//   const updatedEnd = endDate
-					//     .hour(endHour)
-					//     .minute(endMinute)
-					//     .second(0)
-					//     .toISOString();
-
-					await runSql(
-						context.env.DB,
-						'UPDATE tasks SET start_time=?, end_time=? WHERE id=?',
-						[updatedStart, updatedEnd, taskId]
-					);
+					if (updatedStart && updatedEnd) {
+						await runSql(
+							context.env.DB,
+							'UPDATE tasks SET start_time=?, end_time=? WHERE id=?',
+							[updatedStart, updatedEnd, taskId]
+						);
+					}
 				}
 			}
 
 			// [PATCH] Update task_length in recurring_task_settings if new_start_time & new_end_time are provided
-			if (new_start_time && new_end_time) {
-				const [sh, sm] = new_start_time.split(':').map(Number);
-				const [eh, em] = new_end_time.split(':').map(Number);
+			if (!hasDurationUpdate && new_start_time && new_end_time) {
+				const lengthMinutes = diffClockMinutes(new_start_time, new_end_time)
 
-				const startMinutes = sh * 60 + sm
-				const endMinutes = eh * 60 + em
-				const lengthMinutes = endMinutes - startMinutes
-
-				await runSql(
-					context.env.DB,
-					'UPDATE recurring_task_settings SET task_length=? WHERE id=?',
-					[String(lengthMinutes), recId]
-				);
+				if (lengthMinutes != null) {
+					await runSql(
+						context.env.DB,
+						'UPDATE recurring_task_settings SET task_length=? WHERE id=?',
+						[String(lengthMinutes), newRecId]
+					);
+				}
 			}
 
 			if (location_id) {
@@ -1943,6 +2110,7 @@ app.put('/api/recurring_setting/:id/tasks', authMiddleware, async context => {
 app.post("/api/tasks/:id/recurring", authMiddleware, async context => {
 	const taskId = context.req.param().id;
 	const body = await context.req.json()
+	const appTimezone = getRequestTimezone(context.req, context.env);
 
 	const {
 		frequency,
@@ -1960,13 +2128,16 @@ app.post("/api/tasks/:id/recurring", authMiddleware, async context => {
 
 		if (!task) return context.json({ error: 'Task not found' }, 404);
 
+		const normalizedSelectedDays = normalizeRecurringWeekdays(selectedDays);
 		let selectedDayRecurringTaskSettingRecIdMap = {};
-		for (let selectedDay of selectedDays) {
+		for (let selectedDay of normalizedSelectedDays) {
 			// Save recurring settings before generating tasks
 			let recId = uuidv4();
 			// Compute finalCloseDate, taskLengthStr, detailsStr
-			const finalCloseDate = closeDate || null;
-			const taskLengthMinutes = Math.floor((new Date(task.end_time) - new Date(task.start_time)) / 60000)
+			const finalCloseDate = closeDate
+				? getUtcEndOfLocalDay(closeDate, appTimezone)
+				: null;
+			const taskLengthMinutes = diffMinutes(task.start_time, task.end_time) ?? 0
 			const taskLengthStr = String(taskLengthMinutes);
 			let detailsStr = "";
 			if (task.team_id) {
@@ -2035,70 +2206,49 @@ app.post("/api/tasks/:id/recurring", authMiddleware, async context => {
 			selectedDayRecurringTaskSettingRecIdMap[selectedDay] = recId;
 		}
 
-		let start = new Date(startingDate)
-		let end = closeDate ? new Date(closeDate) : null
+		const recurringDates = generateRecurringDates({
+			startingDate,
+			selectedDays: normalizedSelectedDays,
+			occurrences,
+			closeDate,
+			frequency,
+			timezoneName: appTimezone
+		});
 
-		if (!end) {
-			// Calculate end date using native Date
-			const calculatedEndDate = new Date(start)
-			calculatedEndDate.setDate(
-				calculatedEndDate.getDate() + 7 * (occurrences || 1) * (frequency || 1)
-			)
-			end = calculatedEndDate
-		}
-
-		let created = 0;
 		let results = [];
 		let selectedDayLastTaskDateMap = {}
+		const originalStartLocal = toZonedDateTime(task.start_time, appTimezone);
+		const originalEndLocal = toZonedDateTime(task.end_time, appTimezone);
+		const originalEndDayOffset = originalStartLocal && originalEndLocal
+			? originalEndLocal.startOf('day').diff(originalStartLocal.startOf('day'), 'day')
+			: 0;
+		const originalStartTimeText = originalStartLocal?.format('HH:mm') || null;
+		const originalEndTimeText = originalEndLocal?.format('HH:mm') || null;
 
-		while (true) {
-			let anyRecurringCreated = false;
-			for (const weekday of selectedDays) {
-				// console.log('In Loop 1 start', start);
+		for (const nextDate of recurringDates) {
+			const weekday = nextDate.day();
+			const localDateText = nextDate.format('YYYY-MM-DD');
+			const endDateText = nextDate.add(originalEndDayOffset, 'day').format('YYYY-MM-DD');
+			const newStart = combineLocalDateAndTimeToUtcIso({
+				dateValue: localDateText,
+				timeText: originalStartTimeText,
+				timezoneName: appTimezone
+			});
+			const newEnd = combineLocalDateAndTimeToUtcIso({
+				dateValue: endDateText,
+				timeText: originalEndTimeText,
+				timezoneName: appTimezone
+			});
 
-				// Set nextDate to the next instance of the given weekday after or equal to start
-				let nextDate = new Date(start)
-				const diff = (weekday - nextDate.getDay() + 7) % 7
-				nextDate.setDate(nextDate.getDate() + diff)
-				// console.log('In Loop 2 nextDate', nextDate);
+			if (!newStart || !newEnd) {
+				continue;
+			}
 
-				if (nextDate <= new Date(startingDate)) {
-					continue;
-				}
+			const newId = uuidv4();
 
-				// console.log('In Loop 3 nextDate', nextDate);
-
-				if (end && nextDate > end) break;
-
-				const originalStart = new Date(task.start_time)
-				const originalEnd = new Date(task.end_time)
-
-				const newStartDate = new Date(nextDate)
-				newStartDate.setHours(
-					originalStart.getHours(),
-					originalStart.getMinutes(),
-					0,
-					0
-				)
-				const newStart = newStartDate.toISOString()
-
-				const newEndDate = new Date(nextDate)
-				newEndDate.setHours(
-					originalEnd.getHours(),
-					originalEnd.getMinutes(),
-					0,
-					0
-				)
-				const newEnd = newEndDate.toISOString()
-
-				// console.log('In Loop 4 newStart', newStart);
-				// console.log('In Loop 4 newEnd', newEnd);
-
-				const newId = uuidv4();
-
-				await runSql(
-					context.env.DB,
-					`INSERT INTO tasks
+			await runSql(
+				context.env.DB,
+				`INSERT INTO tasks
            (id, task_name, assignment_type, staff_id, team_id, client_id, location_id,
             start_time, end_time, publish, shift_instructions, color,
             isLocation,
@@ -2108,88 +2258,60 @@ app.post("/api/tasks/:id/recurring", authMiddleware, async context => {
             task_client_abn, task_client_acn, task_client_instruction,
             task_client_information, task_client_property_information, recurring_settings)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-					[
-						newId,
-						task.task_name,
-						task.assignment_type,
-						task.staff_id,
-						task.team_id,
-						task.client_id,
-						task.location_id,
-						newStart,
-						newEnd,
-						task.publish,
-						task.shift_instructions,
-						task.color,
-						task.isLocation ?? 0,
-						null,
-						null,
-						task.travel_from,
-						task.travel_dist,
-						task.travel_duration,
-						task.payment_type,
-						task.payment_amount,
-						task.payment_date,
-						task.task_client_name,
-						task.task_client_company,
-						task.task_client_email,
-						task.task_client_phone,
-						task.task_client_abn,
-						task.task_client_acn,
-						task.task_client_instruction,
-						task.task_client_information,
-						task.task_client_property_information,
-						selectedDayRecurringTaskSettingRecIdMap[weekday]
-					]
-				);
+				[
+					newId,
+					task.task_name,
+					task.assignment_type,
+					task.staff_id,
+					task.team_id,
+					task.client_id,
+					task.location_id,
+					newStart,
+					newEnd,
+					task.publish,
+					task.shift_instructions,
+					task.color,
+					task.isLocation ?? 0,
+					null,
+					null,
+					task.travel_from,
+					task.travel_dist,
+					task.travel_duration,
+					task.payment_type,
+					task.payment_amount,
+					task.payment_date,
+					task.task_client_name,
+					task.task_client_company,
+					task.task_client_email,
+					task.task_client_phone,
+					task.task_client_abn,
+					task.task_client_acn,
+					task.task_client_instruction,
+					task.task_client_information,
+					task.task_client_property_information,
+					selectedDayRecurringTaskSettingRecIdMap[weekday]
+				]
+			);
 
-				selectedDayLastTaskDateMap[weekday] = newEnd;
+			selectedDayLastTaskDateMap[weekday] = newEnd;
 
-				let members = await allSql(
+			let members = await allSql(
+				context.env.DB,
+				'SELECT staff_id FROM task_team_members WHERE task_id=?',
+				[taskId]
+			);
+
+			members = members.results || [];
+
+			for (const m of members) {
+				await runSql(
 					context.env.DB,
-					'SELECT staff_id FROM task_team_members WHERE task_id=?',
-					[taskId]
+					'INSERT INTO task_team_members (id, team_id, task_id, staff_id) VALUES (?,?,?,?)',
+					[uuidv4(), task.team_id, newId, m.staff_id]
 				);
-
-				members = members.results || [];
-
-				for (const m of members) {
-					await runSql(
-						context.env.DB,
-						'INSERT INTO task_team_members (id, team_id, task_id, staff_id) VALUES (?,?,?,?)',
-						[uuidv4(), task.team_id, newId, m.staff_id]
-					);
-				}
-
-				anyRecurringCreated = true;
-
-				results.push({ id: newId, start_time: newStart, end_time: newEnd });
 			}
 
-			// console.log('__selectedDays__');
-			// console.log(selectedDays);
-
-			// console.log('created: ', created);
-			// console.log('occurrences: ', occurrences);
-			// console.log('start: ', start);
-			// console.log('end: ', end);
-			// console.log('frequency: ', frequency);
-			// console.log('results: ', results);
-			// console.log('anyRecurringCreated: ', anyRecurringCreated);
-
-			if (anyRecurringCreated) {
-				created++;
-			}
-
-			if (occurrences && created >= occurrences) break;
-			// Calculate nextStart and break if after end
-			const nextStart = new Date(start)
-			nextStart.setDate(nextStart.getDate() + 7 * frequency)
-			if (end && nextStart > end) break
-			start = nextStart
-
-			// console.log('start after: ', start);
-			// console.log('end after: ', end);
+			results.push({ id: newId, start_time: newStart, end_time: newEnd });
 		}
 
 		// After generating all tasks, set close date automatically if not provided
@@ -2257,7 +2379,14 @@ app.post('/api/task_comments', authMiddleware, async context => {
 		const id = uuidv4();
 		const body = await context.req.json()
 		const fields = ['task_id', 'comment', 'is_read', 'staff_id'];
-		const values = fields.map(k => body[k] || null);
+		const values = fields.map(k => {
+			if (k === 'is_read') {
+				const v = body[k];
+				if (v === true || v === 1 || v === '1') return 1;
+				return 0;
+			}
+			return body[k] || null;
+		});
 
 		await runSql(
 			context.env.DB,
@@ -2280,13 +2409,50 @@ app.put('/api/task_comments/:id', authMiddleware, async context => {
 		const body = await context.req.json()
 
 		const setClause = fields.map(f => `${f}=?`).join(', ');
-		const values = fields.map(k => body[k] || null);
+		const values = fields.map(k => {
+			if (k === 'is_read') {
+				const v = body[k];
+				if (v === true || v === 1 || v === '1') return 1;
+				if (v === false || v === 0 || v === '0') return 0;
+				return v == null ? 0 : 1;
+			}
+			return body[k] || null;
+		});
 
 		await runSql(context.env.DB, `UPDATE task_comments SET ${setClause} WHERE id=?`, [...values, context.req.param().id]);
 
 		let row = await getSql(context.env.DB, 'SELECT * FROM task_comments WHERE id=?', [context.req.param().id]);
 		
 
+		return context.json(row);
+	} catch (e) {
+		return context.json({ error: e.message }, 500);
+	}
+});
+
+/**
+ * Set is_read on a task comment (body: { isRead } or { is_read }, default mark read).
+ */
+app.patch('/api/task_comments/:id/read', authMiddleware, async context => {
+	try {
+		const id = context.req.param().id;
+		let body = {};
+		try {
+			body = await context.req.json();
+		} catch {
+			body = {};
+		}
+		const raw = body.isRead !== undefined ? body.isRead : body.is_read;
+		const isRead =
+			raw === false || raw === 0 || raw === '0' || raw === 'false' ? 0 : 1;
+
+		const existing = await getSql(context.env.DB, 'SELECT id FROM task_comments WHERE id = ?', [id]);
+		if (!existing) {
+			return context.json({ error: 'Task comment not found' }, 404);
+		}
+
+		await runSql(context.env.DB, 'UPDATE task_comments SET is_read = ? WHERE id = ?', [isRead, id]);
+		const row = await getSql(context.env.DB, 'SELECT * FROM task_comments WHERE id = ?', [id]);
 		return context.json(row);
 	} catch (e) {
 		return context.json({ error: e.message }, 500);
@@ -2310,17 +2476,24 @@ app.get('/api/taskschedule', authMiddleware, async context => {
 
 		// console.log('req query', context.req.query());
 		const { from, to, staffId, clientId } = context.req.query();
+		const appTimezone = getRequestTimezone(context.req, context.env);
 
 		let where = [];
 		let params = [];
+		const { fromUtc, toUtcExclusive } = buildUtcRangeFromLocalDates({
+			from,
+			to,
+			timezoneName: appTimezone,
+			inclusiveTo: true
+		});
 
-		if (from) {
-			where.push('date(start_time) >= date(?)');
-			params.push(from);
+		if (fromUtc) {
+			where.push('start_time >= ?');
+			params.push(fromUtc);
 		}
-		if (to) {
-			where.push('date(start_time) <= date(?)');
-			params.push(to);
+		if (toUtcExclusive) {
+			where.push('start_time < ?');
+			params.push(toUtcExclusive);
 		}
 		if (staffId) {
 			where.push('tasks.staff_id = ?');
@@ -2353,7 +2526,16 @@ app.get('/api/taskschedule', authMiddleware, async context => {
 			const loggedMinutes = (row.started_at && row.stopped_at)
 			  ? Math.max(0, Math.floor((new Date(row.stopped_at) - new Date(row.started_at)) / 60000))
 			  : 0;
-			const payLengthMinutes = Math.min(scheduledMinutes, loggedMinutes);
+			const computedPayMinutes = computePayLengthMinutes({
+				start_time: row.start_time,
+				end_time: row.end_time,
+				started_at: row.started_at,
+				stopped_at: row.stopped_at
+			}) ?? Math.min(scheduledMinutes, loggedMinutes)
+			const storedPay = row.pay_length_minutes
+			const payLengthMinutes = (storedPay != null && storedPay !== '' && Number.isFinite(Number(storedPay)))
+			  ? Math.max(0, Math.round(Number(storedPay)))
+			  : computedPayMinutes
 
 			return {
 				...row,
@@ -2379,6 +2561,7 @@ app.get('/api/taskschedule', authMiddleware, async context => {
 app.get('/api/shifts/by-staff-week', authMiddleware, async context => {
 	try {
 		const { staffId, weekStart, weekEnd } = context.req.query();
+		const appTimezone = getRequestTimezone(context.req, context.env);
 
 		if (!staffId || !weekStart || !weekEnd) {
 			return context.json(
@@ -2386,6 +2569,30 @@ app.get('/api/shifts/by-staff-week', authMiddleware, async context => {
 				400
 			);
 		}
+
+	// Below sql query will get all tasks for the staff if supervisor or cleaner
+	// 	const sql = `
+    //   SELECT t.*, s.name AS staff_name, c.client_name AS client_name, l.title AS location_title, tm.name AS team_supervisor,
+    //   l.lat AS location_lat, l.lng AS location_lng, l.unit_no AS location_unit_no, l.radius_meters AS location_radius_meters, l.comment AS location_comment
+    //   FROM tasks t
+    //   LEFT JOIN staff s ON t.staff_id = s.id
+    //   LEFT JOIN clients c ON t.client_id = c.id
+    //   LEFT JOIN locations l ON t.location_id = l.id
+    //   LEFT JOIN teams te ON t.team_id = te.id
+    //   LEFT JOIN staff tm ON te.supervisor_id = tm.id
+    //   WHERE (t.staff_id = ? OR t.id IN (SELECT task_id FROM task_team_members WHERE staff_id = ?))
+    //     AND date(t.start_time) >= date(?)
+    //     AND date(t.start_time) <= date(?)
+	// 	AND t.publish = 1
+    //   ORDER BY t.start_time ASC
+    // `;
+
+		const { fromUtc, toUtcExclusive } = buildUtcRangeFromLocalDates({
+			from: weekStart,
+			to: weekEnd,
+			timezoneName: appTimezone,
+			inclusiveTo: true
+		});
 
 		const sql = `
       SELECT t.*, s.name AS staff_name, c.client_name AS client_name, l.title AS location_title, tm.name AS team_supervisor,
@@ -2396,13 +2603,15 @@ app.get('/api/shifts/by-staff-week', authMiddleware, async context => {
       LEFT JOIN locations l ON t.location_id = l.id
       LEFT JOIN teams te ON t.team_id = te.id
       LEFT JOIN staff tm ON te.supervisor_id = tm.id
-      WHERE (t.staff_id = ? OR t.id IN (SELECT task_id FROM task_team_members WHERE staff_id = ?))
-        AND date(t.start_time) >= date(?)
-        AND date(t.start_time) <= date(?)
+      WHERE (t.staff_id = ?)
+        AND t.start_time >= ?
+        AND t.start_time < ?
+		AND t.publish = 1
       ORDER BY t.start_time ASC
     `;
 
-		let rows = await allSql(context.env.DB, sql, [staffId, staffId, weekStart, weekEnd]);
+		// let rows = await allSql(context.env.DB, sql, [staffId, staffId, weekStart, weekEnd]);
+		let rows = await allSql(context.env.DB, sql, [staffId, fromUtc, toUtcExclusive]);
 		rows = rows.results || [];
 
 		for (const task of rows) {
@@ -2424,6 +2633,7 @@ app.get('/api/shifts/by-staff-week', authMiddleware, async context => {
 app.get("/schedule/viewStaffRoster", async context => {
 
 	const { url_id, key, key2 } = context.req.query();
+	const appTimezone = getRequestTimezone(context.req, context.env);
   
 	if (!url_id || !key || !key2) {
 	  return context.text("Invalid URL", 400);
@@ -2443,6 +2653,9 @@ app.get("/schedule/viewStaffRoster", async context => {
 	if (!staff) {
 		return context.text("Unauthorized", 403);
 	}
+
+	const { startUtc: currentWeekStartUtc, endUtcExclusive: nextWeekStartUtc } =
+		getCurrentWeekUtcRange(appTimezone);
   
 	// Get tasks for the current week (Monday-Sunday)
 	const tasks = await allSql(context.env.DB, `
@@ -2481,24 +2694,14 @@ app.get("/schedule/viewStaffRoster", async context => {
 					WHERE staff_id = ?
 				)
 			)
-			AND DATE(t.start_time) >= DATE('now', '-6 days', 'weekday 1')
-			AND DATE(t.start_time) <= DATE('now', '-6 days', 'weekday 1', '+6 days')
+			AND t.start_time >= ?
+			AND t.start_time < ?
 		GROUP BY t.id
 		ORDER BY t.start_time;
-	`,[url_id, url_id]);
+	`,[url_id, url_id, currentWeekStartUtc, nextWeekStartUtc]);
   
-	const formatDate = (date) => {
-	  const d = new Date(date);
-	  return d.toLocaleString("en-AU", {
-		hour: "numeric",
-		minute: "2-digit",
-		hour12: true,
-		weekday: "short",
-		day: "2-digit",
-		month: "short",
-		year: "numeric"
-	  });
-	};
+	const formatDate = (date) =>
+		formatInTimezone(date, appTimezone, 'ddd, DD MMM YYYY h:mm A');
   
 	let rows = "";
 
@@ -2576,7 +2779,7 @@ app.get("/schedule/viewStaffRoster", async context => {
 
 
 /* -----------------------------
-  🚗 Task Staff Travel CRUD
+  Task Staff Travel CRUD
 ----------------------------- */
 app.get('/api/task_staff_travel', authMiddleware, async context => {
 	try {

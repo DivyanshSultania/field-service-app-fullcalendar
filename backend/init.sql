@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   travel_from TEXT,
   travel_dist FLOAT,
   travel_duration FLOAT,
+  pay_length_minutes INTEGER,
   payment_type TEXT,
   payment_amount TEXT,
   payment_date TEXT, -- It will hold date time value but stored as text in DB
