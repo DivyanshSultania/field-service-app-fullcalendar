@@ -54,7 +54,11 @@ export default function CalendarView({
   filter = { type: 'staff', ids: [], hiddenDays: [] },
   onHiddenDaysChange,
   openTaskRequest,
-  onOpenTaskHandled
+  onOpenTaskHandled,
+  lookupStaff,
+  lookupTeams,
+  lookupClients,
+  lookupLocations,
 }) {
   async function readJsonOrFallback(response, fallback) {
     try {
@@ -560,21 +564,60 @@ export default function CalendarView({
     return fetchTasksForVisibleRange(range.start, range.end, { force: true });
   }
 
-  // Fetch teams, staff, clients, locations
-  useEffect(() => {
-    authFetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams).catch(() => {});
-    authFetch(`${VITE_KEY}/api/staff`).then(r => r.json()).then(setStaffs).catch(() => {});
-    authFetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
-    authFetch(`${VITE_KEY}/api/locations`).then(r => r.json()).then(setLocations).catch(() => {});
-    authFetch(`${VITE_KEY}/api/team_members`).then(r => r.json()).then(setTeamMembers).catch(() => {});
-    // fetchTasksForVisibleRange(new Date(), dayjs().add(1, 'day').toDate());
+  async function refreshTeamMembers() {
+    try {
+      const res = await authFetch(`${VITE_KEY}/api/team_members`);
+      const data = await res.json();
+      if (Array.isArray(data)) setTeamMembers(data);
+    } catch (err) {
+      console.error('Failed to refresh team members', err);
+    }
+  }
 
-    // const listener = () => {
-    //   refreshTasksForCurrentRange();
-    // };
-  
-    // window.addEventListener("refreshCalendar", listener);
-    // return () => window.removeEventListener("refreshCalendar", listener);
+  /** After task mutations: reload visible tasks and team membership (not used on calendar date navigation). */
+  function refreshAfterTaskMutation() {
+    return Promise.all([refreshTasksForCurrentRange(), refreshTeamMembers()]);
+  }
+
+  /** Refetch every month in the session cache plus the visible range (after recurring edits, etc.). */
+  function refreshAllCachedTaskMonths() {
+    const cachedKeys = Array.from(tasksByMonthRef.current.keys());
+    const range = getActiveRange();
+    const visibleKeys = range?.start && range?.end
+      ? getMonthKeysForRange(range.start, range.end)
+      : [];
+    const monthKeys = [...new Set([...cachedKeys, ...visibleKeys])];
+    if (monthKeys.length === 0) {
+      return refreshAfterTaskMutation();
+    }
+    return Promise.all([
+      ...monthKeys.map(monthKey => fetchTasksForMonth(`${monthKey}-01`, { force: true })),
+      refreshTeamMembers(),
+    ]);
+  }
+
+  // Staff, teams, clients, locations: provided once from App (session). team_members: load once on mount, then only after task mutations (not on prev/next range changes).
+  useEffect(() => {
+    if (lookupStaff !== undefined) setStaffs(lookupStaff);
+    if (lookupTeams !== undefined) setTeams(lookupTeams);
+    if (lookupClients !== undefined) setClients(lookupClients);
+    if (lookupLocations !== undefined) setLocations(lookupLocations);
+  }, [lookupStaff, lookupTeams, lookupClients, lookupLocations]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(`${VITE_KEY}/api/team_members`);
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data)) setTeamMembers(data);
+      } catch (err) {
+        console.error('Failed to load team members', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1888,6 +1931,101 @@ export default function CalendarView({
     // setEditModalOpen(false);
   }
 
+  function resolveEventStartEnd(ev) {
+    const ext = ev.extendedProps || {};
+    const start = ev.start;
+    let end = ev.end;
+    if (!start) return null;
+    if (!end) {
+      const prevStart = ext.start_time ? new Date(ext.start_time) : null;
+      const prevEnd = ext.end_time ? new Date(ext.end_time) : null;
+      const durationMs =
+        prevStart && prevEnd ? prevEnd - prevStart : 60 * 60 * 1000;
+      end = new Date(start.getTime() + durationMs);
+    }
+    return { start, end };
+  }
+
+  async function persistTaskTimeChange(changeInfo, previousTask, startIso, endIso) {
+    const taskId = previousTask?.id || changeInfo.event.id;
+    if (!taskId) {
+      changeInfo.revert();
+      return;
+    }
+
+    try {
+      const res = await authFetch(`${VITE_KEY}/api/tasks/${taskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start_time: startIso,
+          end_time: endIso,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(await getResponseError(res, 'Failed to update shift time'));
+      }
+
+      const updatedRow = await readJsonOrFallback(res, {});
+      const mergedTask = {
+        ...previousTask,
+        ...updatedRow,
+        start_time: startIso,
+        end_time: endIso,
+      };
+
+      try {
+        await syncAffectedTaskTravel([previousTask, mergedTask], tasks, taskId);
+      } catch (travelErr) {
+        console.error('Travel sync after calendar move failed', travelErr);
+      }
+
+      await refreshAfterTaskMutation();
+      showToast('Shift time updated', '#16a34a');
+    } catch (err) {
+      console.error(err);
+      changeInfo.revert();
+      showToast(err.message || 'Failed to update shift time');
+    }
+  }
+
+  async function handleEventDrop(changeInfo) {
+    const ev = changeInfo.event;
+    const ext = ev.extendedProps || {};
+    const previousTask = { ...ext };
+    const range = resolveEventStartEnd(ev);
+    if (!range) {
+      changeInfo.revert();
+      return;
+    }
+
+    await persistTaskTimeChange(
+      changeInfo,
+      previousTask,
+      range.start.toISOString(),
+      range.end.toISOString()
+    );
+  }
+
+  async function handleEventResize(changeInfo) {
+    const ev = changeInfo.event;
+    const ext = ev.extendedProps || {};
+    const previousTask = { ...ext };
+    const range = resolveEventStartEnd(ev);
+    if (!range) {
+      changeInfo.revert();
+      return;
+    }
+
+    await persistTaskTimeChange(
+      changeInfo,
+      previousTask,
+      range.start.toISOString(),
+      range.end.toISOString()
+    );
+  }
+
   function handleAssignmentTypeChange(type) {
     setCurrentTask(f => ({
       ...f,
@@ -1956,7 +2094,7 @@ export default function CalendarView({
         setCreateEventOpening(false);
         showToast(await getResponseError(fullRes, 'Failed to load new shift'), '#dc2626');
         setCreateModalOpen(false);
-        refreshTasksForCurrentRange().catch(() => {});
+        refreshAfterTaskMutation().catch(() => {});
         return;
       }
 
@@ -2002,7 +2140,7 @@ export default function CalendarView({
       setCurrentTask({ ...fullTask });
       setCreateModalOpen(false);
       openEditTaskModal(fullTask, { initialEditTab: 'Client' });
-      refreshTasksForCurrentRange().catch(() => {});
+      refreshAfterTaskMutation().catch(() => {});
     } catch (e) {
       setCreateEventOpening(false);
       console.error('Create task error', e);
@@ -2762,7 +2900,7 @@ export default function CalendarView({
         }
         setEditModalOpen(false);
 
-        refreshTasksForCurrentRange().catch((err) => {
+        refreshAfterTaskMutation().catch((err) => {
           console.error('Error Occurred in closeEditTaskModal', err);
           showToast(err.message || 'Error occurred');
         });
@@ -4022,7 +4160,15 @@ export default function CalendarView({
 
           {taskModalMainTab === 'Repeat' && (
             <div style={{padding:'20px', textAlign:'center', color:'#6b7280'}}>
-              <RecurringShiftSettings task={currentTask} onCreated={refreshTasksForCurrentRange} />
+              <RecurringShiftSettings
+                task={currentTask}
+                onCreated={refreshAllCachedTaskMonths}
+                lookupTeams={teams}
+                lookupStaffs={staffs}
+                lookupClients={clients}
+                lookupLocations={locations}
+                lookupTeamMembers={teamMembers}
+              />
 
             </div>
           )}
@@ -4123,7 +4269,7 @@ export default function CalendarView({
 
                     showToast('Task cancelled and assigned to Cover', '#16a34a');
                     setEditModalOpen(false);
-                    refreshTasksForCurrentRange().catch(() => {});
+                    refreshAfterTaskMutation().catch(() => {});
                   } catch (e) {
                     console.error(e);
                     showToast('Failed to cancel task');
@@ -4536,7 +4682,7 @@ export default function CalendarView({
                     showToast(`Published ${updatedCount} task(s).`, '#16a34a');
 
                     // Reload tasks so calendar reflects new publish state
-                    refreshTasksForCurrentRange().catch(() => {});
+                    refreshAfterTaskMutation().catch(() => {});
                   } catch (e) {
                     console.error(e);
                     showToast(e.message || 'Failed to publish tasks');
@@ -4552,7 +4698,8 @@ export default function CalendarView({
             eventClick={handleEventClick}
             events={events}
             editable={true}
-            // eventDrop={handleEventDrop}
+            eventDrop={handleEventDrop}
+            eventResize={handleEventResize}
             // datesSet={arg => {
             //   debugger;
             //   setCurrentView(arg.view.type);

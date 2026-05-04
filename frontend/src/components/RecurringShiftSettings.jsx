@@ -3,6 +3,12 @@ import dayjs from "dayjs";
 import Modal from './Modal';
 import { GOOGLE_MAPS_API_KEY, loadGoogleMapsApi } from '../utils/googleMaps';
 import {authFetch} from './../pages/utils';
+import {
+  DURATION_HOUR_OPTIONS,
+  DURATION_MINUTE_OPTIONS,
+  parseDurationPartsToMinutes,
+  splitMinutesToDurationParts,
+} from '../utils/duration';
 
 const DAYS = [
   { key: "M", value: 1 },
@@ -16,7 +22,15 @@ const DAYS = [
 
 const VITE_KEY = import.meta.env.VITE_API_URL;
 
-export default function RecurringShiftSettings({ task, onCreated }) {
+export default function RecurringShiftSettings({
+  task,
+  onCreated,
+  lookupTeams,
+  lookupStaffs,
+  lookupClients,
+  lookupLocations,
+  lookupTeamMembers,
+}) {
   const [frequency, setFrequency] = useState(1);
   const [selectedDays, setSelectedDays] = useState([]);
   const [occurrences, setOccurrences] = useState("");
@@ -34,12 +48,6 @@ export default function RecurringShiftSettings({ task, onCreated }) {
   const [pendingPatternAction, setPendingPatternAction] = useState("");
   const [changeFromDate, setChangeFromDate] = useState(dayjs().format("YYYY-MM-DD"));
   const [changeFromDateModalOpen, setChangeFromDateModalOpen] = useState(false);
-
-// Cutover date (inclusive) for applying updates to generated recurring tasks.
-  const changeFromDateIso = (() => {
-    const dt = task?.start_time || task?.start_date;
-    return dt ? dayjs(dt).startOf("day").toISOString() : dayjs().startOf("day").toISOString();
-  })();
 
   // Loader state for dropping recurring patterns
   // const [isDropping, setIsDropping] = useState(false);
@@ -102,6 +110,9 @@ export default function RecurringShiftSettings({ task, onCreated }) {
   const [newStartTime, setNewStartTime] = useState("");
   const [newEndTime, setNewEndTime] = useState("");
 
+  const [lengthModalOpen, setLengthModalOpen] = useState(false);
+  const [lengthDurationMinutes, setLengthDurationMinutes] = useState(60);
+
   // Mutually exclusive fields
   useEffect(() => {
     if (occurrences) setCloseDate("");
@@ -119,17 +130,30 @@ export default function RecurringShiftSettings({ task, onCreated }) {
     }
   };
 
-  // Fetch teams, staff, clients, locations
+  // Prefer lookups from CalendarView; otherwise fetch (standalone usage).
   useEffect(() => {
+    const hasParentLookups =
+      lookupTeams !== undefined &&
+      lookupStaffs !== undefined &&
+      lookupClients !== undefined &&
+      lookupLocations !== undefined &&
+      lookupTeamMembers !== undefined;
+
+    if (hasParentLookups) {
+      setTeams(lookupTeams);
+      setStaffs(lookupStaffs);
+      setClients(lookupClients);
+      setLocations(lookupLocations);
+      setTeamMembers(lookupTeamMembers);
+      return;
+    }
+
     authFetch(`${VITE_KEY}/api/teams`).then(r => r.json()).then(setTeams).catch(() => {});
     authFetch(`${VITE_KEY}/api/staff`).then(r => r.json()).then(setStaffs).catch(() => {});
     authFetch(`${VITE_KEY}/api/clients`).then(r => r.json()).then(setClients).catch(() => {});
     authFetch(`${VITE_KEY}/api/locations`).then(r => r.json()).then(setLocations).catch(() => {});
     authFetch(`${VITE_KEY}/api/team_members`).then(r => r.json()).then(setTeamMembers).catch(() => {});
-    // authFetch(`${VITE_KEY}/api/tasks`).then(r => r.json()).then(setTasks).catch(() => {});
-
-    return;
-  }, []);
+  }, [lookupTeams, lookupStaffs, lookupClients, lookupLocations, lookupTeamMembers]);
 
   function closeTeamSelectionModal() {
     setEditTaskStaffModalOpen(false);
@@ -151,10 +175,10 @@ export default function RecurringShiftSettings({ task, onCreated }) {
 
       const responses = await Promise.all(
         selectedRecurringIds.map((rid) =>
-          authFetch(`${VITE_KEY}/api/recurring_setting/${rid}`, {
+            authFetch(`${VITE_KEY}/api/recurring_setting/${rid}`, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ date: changeFromDateIso })
+            body: JSON.stringify({ date: changeFromDate })
           })
         )
       );
@@ -226,6 +250,17 @@ export default function RecurringShiftSettings({ task, onCreated }) {
       setNewStartTime(task?.start_time ? dayjs(task.start_time).format('HH:mm') : '');
       setNewEndTime(task?.end_time ? dayjs(task.end_time).format('HH:mm') : '');
       setTimeLengthModalOpen(true);
+      return;
+    }
+
+    if (action === "length") {
+      const raw =
+        task?.start_time && task?.end_time
+          ? dayjs(task.end_time).diff(dayjs(task.start_time), 'minute')
+          : 120;
+      const snapped = Math.max(5, Math.min(1435, Math.round(Number(raw) / 5) * 5));
+      setLengthDurationMinutes(Number.isFinite(snapped) ? snapped : 60);
+      setLengthModalOpen(true);
     }
   }
 
@@ -283,7 +318,7 @@ export default function RecurringShiftSettings({ task, onCreated }) {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                date: changeFromDateIso,
+                date: changeFromDate,
                 team_id: selectedTeam.id,
                 staff_id: supervisorId,
                 task_team_members: teamManageCleaners
@@ -461,7 +496,7 @@ export default function RecurringShiftSettings({ task, onCreated }) {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                date: changeFromDateIso,
+                date: changeFromDate,
                 staff_id: manageStaffModalSupervisor,
                 task_team_members: manageStaffModalCleaners
               })
@@ -659,7 +694,7 @@ export default function RecurringShiftSettings({ task, onCreated }) {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                date: changeFromDateIso,
+                date: changeFromDate,
                 location_id: loc.id
               })
             })
@@ -927,7 +962,7 @@ export default function RecurringShiftSettings({ task, onCreated }) {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                date: changeFromDateIso,
+                date: changeFromDate,
                 ...clientForm
               })
             })
@@ -1183,23 +1218,196 @@ export default function RecurringShiftSettings({ task, onCreated }) {
     );
   }
 
+  function renderLengthDurationInputs() {
+    const parts = splitMinutesToDurationParts(lengthDurationMinutes);
+    const inputStyle = {
+      width: 70,
+      minHeight: 36,
+      padding: '8px 10px',
+      borderRadius: 6,
+      border: '1px solid #d1d5db',
+      background: '#ffffff',
+      textAlign: 'center',
+    };
+
+    const updateDurationPart = (part, rawValue) => {
+      const nextHours = part === 'hours' ? rawValue : parts.hours;
+      const nextMinutes = part === 'minutes' ? rawValue : parts.minutes;
+      const nextTotalMinutes = parseDurationPartsToMinutes(nextHours, nextMinutes);
+      if (nextTotalMinutes == null) return;
+      setLengthDurationMinutes(nextTotalMinutes);
+    };
+
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+        <select
+          value={parts.hours}
+          onChange={(event) => updateDurationPart('hours', event.target.value)}
+          style={inputStyle}
+          aria-label="Duration hours"
+        >
+          {DURATION_HOUR_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+        <span style={{ color: '#475569', fontWeight: 600 }}>:</span>
+        <select
+          value={parts.minutes}
+          onChange={(event) => updateDurationPart('minutes', event.target.value)}
+          style={inputStyle}
+          aria-label="Duration minutes"
+        >
+          {DURATION_MINUTE_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  function LengthUpdateModal() {
+    if (!lengthModalOpen) return null;
+
+    return (
+      <Modal
+        open={lengthModalOpen}
+        title="Update Shift Length"
+        onClose={() => {
+          setLengthModalOpen(false);
+          setSelectedPatternAction('');
+        }}
+      >
+        <div style={{ minWidth: 360, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ margin: 0, color: '#475569', fontSize: 14 }}>
+            Start times stay the same for each occurrence. End times are set from this duration (same as Shift Detail).
+          </p>
+          <label>
+            <strong>Duration</strong>
+            {renderLengthDurationInputs()}
+          </label>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button
+              className="btn"
+              onClick={() => {
+                setLengthModalOpen(false);
+                setSelectedPatternAction('');
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn primary"
+              disabled={!lengthDurationMinutes || lengthDurationMinutes < 1}
+              onClick={handleSaveLengthUpdate}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  async function handleSaveLengthUpdate() {
+    try {
+      setLoading(true);
+
+      const responses = await Promise.all(
+        selectedRecurringIds.map((rid) =>
+          authFetch(`${VITE_KEY}/api/recurring_setting/${rid}/tasks`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              date: changeFromDate,
+              duration_minutes: lengthDurationMinutes,
+            }),
+          })
+        )
+      );
+
+      const payloads = await Promise.all(
+        responses.map(async (response) => {
+          const data = await response.json().catch(() => ({}));
+
+          if (!response.ok) {
+            throw new Error(data?.error || 'Failed to update recurring tasks');
+          }
+
+          return data;
+        })
+      );
+
+      const updatedCount = payloads.reduce((total, payload) => {
+        const count = Number(payload?.updated);
+        return total + (Number.isFinite(count) ? count : 0);
+      }, 0);
+
+      if (updatedCount === 0) {
+        window.showToast?.('No recurring shifts matched the selected change date.');
+        return;
+      }
+
+      window.showToast?.('Shift length updated successfully');
+
+      setLengthModalOpen(false);
+      setSelectedRecurringIds([]);
+      setSelectedPatternAction('');
+      await loadRecurring();
+      if (onCreated) {
+        await onCreated();
+      }
+    } catch (e) {
+      console.error(e);
+      window.showToast?.(e?.message || 'Failed to update recurring tasks');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleSaveTimeLengthUpdate() {
     try {
       setLoading(true);
   
-      await Promise.all(
+      const responses = await Promise.all(
         selectedRecurringIds.map(rid =>
           authFetch(`${VITE_KEY}/api/recurring_setting/${rid}/tasks`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              date: changeFromDateIso,
+              date: changeFromDate,
               new_start_time: newStartTime,
               new_end_time: newEndTime
             })
           })
         )
       );
+
+      const payloads = await Promise.all(
+        responses.map(async (response) => {
+          const data = await response.json().catch(() => ({}));
+
+          if (!response.ok) {
+            throw new Error(data?.error || "Failed to update recurring tasks");
+          }
+
+          return data;
+        })
+      );
+
+      const updatedCount = payloads.reduce((total, payload) => {
+        const count = Number(payload?.updated);
+        return total + (Number.isFinite(count) ? count : 0);
+      }, 0);
+
+      if (updatedCount === 0) {
+        window.showToast?.("No recurring shifts matched the selected change date.");
+        return;
+      }
   
       window.showToast?.(
         "Task time updated successfully"
@@ -1209,9 +1417,12 @@ export default function RecurringShiftSettings({ task, onCreated }) {
       setSelectedRecurringIds([]);
       setSelectedPatternAction("");
       await loadRecurring();
+      if (onCreated) {
+        await onCreated();
+      }
     } catch (e) {
       console.error(e);
-      window.showToast?.("Failed to update recurring tasks");
+      window.showToast?.(e?.message || "Failed to update recurring tasks");
     } finally {
       setLoading(false);
     }
@@ -1505,6 +1716,7 @@ export default function RecurringShiftSettings({ task, onCreated }) {
               <option value="individual_staff">Individual Staff</option>
               <option value="client">Client</option>
               <option value="time">Time</option>
+              <option value="length">Length</option>
               <option value="location">Location</option>
             </select>
           </div>
@@ -1599,6 +1811,7 @@ export default function RecurringShiftSettings({ task, onCreated }) {
     {ManageStaffModal()}
     {LocationSelectionModal()}
     {TimeLengthModal()}
+    <LengthUpdateModal />
     <ClientUpdateModal />
     </div>
   );
