@@ -820,21 +820,15 @@ export default function IndividualView({
 
         if (bulkAction === 'start_time') {
           const duration = task?.scheduled_length_minutes || 60;
-          const nextStart = dayjs(task.start_time)
-            .hour(Number(bulkValue.split(':')[0] || 0))
-            .minute(Number(bulkValue.split(':')[1] || 0))
-            .second(0)
-            .millisecond(0);
-
           patch = {
-            start_time: nextStart.toISOString(),
-            end_time: nextStart.add(duration, 'minute').toISOString(),
+            local_start_time: bulkValue,
+            duration_minutes: duration,
           };
         }
 
         if (bulkAction === 'duration') {
           patch = {
-            end_time: dayjs(task.start_time).add(bulkDurationMinutes, 'minute').toISOString(),
+            duration_minutes: bulkDurationMinutes,
           };
         }
 

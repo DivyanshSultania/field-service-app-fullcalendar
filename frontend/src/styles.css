@@ -15,7 +15,7 @@ body, html, #root { height: 100%; margin:0; background:var(--bg); }
 .tab { padding:8px 12px; border-radius:20px; border:1px solid #e6eefb; background:#fff; }
 .tab.active { background: linear-gradient(90deg,#EEF2FF,#EEF6FF); color:var(--accent); }
 .search { width:100%; padding:10px; border-radius:8px; border:1px solid #eef2f7; margin-bottom:12px; }
-.staff-list { max-height:60vh; overflow:auto; }
+.staff-list { max-height:30vh; overflow:scroll; }
 .staff-row { display:flex; align-items:center; gap:8px; padding:8px 4px; }
 .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
 .main { flex:1; padding:18px; display:flex; flex-direction:column; gap:12px; }
