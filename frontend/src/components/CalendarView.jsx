@@ -308,6 +308,9 @@ export default function CalendarView({
   const [locationLoadingDelete, setLocationLoadingDelete] = useState({});
   /** When set, confirming uses this saved location row unless the user edits fields (then a new location is created). */
   const [locationPickedExistingId, setLocationPickedExistingId] = useState(null);
+  const locationSearchCacheRef = useRef(new Map());
+  const locationSearchInFlightRef = useRef(new Map());
+  const locationLatestQueryRef = useRef('');
 
   const VITE_KEY = import.meta.env.VITE_API_URL;
   const R2_PUBLIC_URL = 'https://pub-ac8edfc52ef04beba837f1804a4abf42.r2.dev';
@@ -2394,6 +2397,7 @@ export default function CalendarView({
     setLocationRadiusMeter(100);
     setLocationLoadingDelete({});
     setLocationPickedExistingId(null);
+    locationLatestQueryRef.current = '';
 
     setLocationModalOpen(true);
   }
@@ -2486,45 +2490,77 @@ export default function CalendarView({
       }
     }, [locationMapLoaded]);
 
-    function handleSearch() {
-      // debugger;
-      if (!locationSearchText || !window.google || !window.google.maps) {
+    async function handleSearch({ force = false } = {}) {
+      const query = String(locationSearchText || '').trim();
+      if (!window.google || !window.google.maps) return;
+
+      if (!force && query.length < MIN_LOCATION_SEARCH_CHARS) {
+        setLocationSearchResults([]);
         return;
       }
 
       setLocationPickedExistingId(null);
+      locationLatestQueryRef.current = query;
+
+      if (locationSearchCacheRef.current.has(query)) {
+        setLocationSearchResults(locationSearchCacheRef.current.get(query));
+        return;
+      }
 
       if (locationMapLoaded && !mapRef.current && locationModalOpen) {
         const maps = window.google.maps;
         mapRef.current = new maps.Map(document.getElementById('location-map'), {
-          center: {lat: -33.8688, lng: 151.2195},
+          center: { lat: -33.8688, lng: 151.2195 },
           zoom: 13,
         });
       }
-      
-      try {
-        const service = new window.google.maps.places.PlacesService(mapRef.current);
-        service.textSearch({query: locationSearchText}, (results, status) => {
-          if (status === window.google.maps.places.PlacesServiceStatus.OK) {
-            setLocationSearchResults(results);
-          } else {
-            console.error('Text search failed:', status);
-            console.error('Text search failed:', results);
-          }
-        })
-      } catch (err){
-        debugger;
-        console.error('Text search errored:', err);
 
+      if (locationSearchInFlightRef.current.has(query)) {
+        await locationSearchInFlightRef.current.get(query);
+        return;
       }
 
-      
+      try {
+        const service = new window.google.maps.places.PlacesService(mapRef.current);
+        const requestPromise = new Promise(resolve => {
+          service.textSearch({ query, location: { lat: -33.8688, lng: 151.2195 } }, (results, status) => {
+            const nextResults = status === window.google.maps.places.PlacesServiceStatus.OK ? (results || []) : [];
+            if (status !== window.google.maps.places.PlacesServiceStatus.OK) {
+              console.error('Text search failed:', status);
+            }
+            locationSearchCacheRef.current.set(query, nextResults);
+            if (locationLatestQueryRef.current === query) {
+              setLocationSearchResults(nextResults);
+            }
+            resolve(nextResults);
+          });
+        });
+        locationSearchInFlightRef.current.set(query, requestPromise);
+        await requestPromise;
+      } catch (err) {
+        console.error('Text search errored:', err);
+      } finally {
+        locationSearchInFlightRef.current.delete(query);
+      }
     }
+
+    useEffect(() => {
+      const query = String(locationSearchText || '').trim();
+      if (!query || query.length < MIN_LOCATION_SEARCH_CHARS) {
+        setLocationSearchResults([]);
+        return undefined;
+      }
+      const timer = setTimeout(() => {
+        handleSearch();
+      }, LOCATION_SEARCH_DEBOUNCE_MS);
+      return () => clearTimeout(timer);
+    }, [locationSearchText]);
 
     function handleSelectPlace(place) {
       setSelectedLocationPlace(place);
       setLocationSearchResults([]);
       setLocationPickedExistingId(null);
+      setLocationSearchText([place?.name, place?.formatted_address].filter(Boolean).join(' — '));
     }
 
     function handleLocationModalAdd(loc) {
@@ -2579,7 +2615,9 @@ export default function CalendarView({
       }
       return 0;
     });
-    const recentLocations = locationsSorted.slice(0, 10);
+    const recentLocations = locationsSorted;
+    const MIN_LOCATION_SEARCH_CHARS = 6;
+    const LOCATION_SEARCH_DEBOUNCE_MS = 2000;
 
     async function handleDeleteLocation(locId) {
       setLocationLoadingDelete(ld => ({...ld, [locId]: true}));
@@ -2623,7 +2661,10 @@ export default function CalendarView({
               }}
               style={{width:'70%'}}
             />
-            <button className="btn" onClick={handleSearch} style={{marginLeft:8}}>Search maps</button>
+            <button className="btn" onClick={() => handleSearch({ force: true })} style={{marginLeft:8}}>Search maps</button>
+          </div>
+          <div style={{fontSize:12, color:'#64748b', marginTop:-2}}>
+            Auto-search starts after {MIN_LOCATION_SEARCH_CHARS}+ characters.
           </div>
           {locationSearchText.trim() && existingLocationMatches.length > 0 && (
             <div style={{marginBottom:4}}>
@@ -2651,6 +2692,21 @@ export default function CalendarView({
           {locationPickedExistingId && (
             <div style={{fontSize:12, color:'#0369a1', background:'#e0f2fe', padding:'8px 10px', borderRadius:6, border:'1px solid #7dd3fc'}}>
               <strong>Saved location selected.</strong> Editing unit, comment, radius, or search text will create a <strong>new</strong> location for this task.
+            </div>
+          )}
+          {selectedLocationPlace && (
+            <div style={{fontSize:12, color:'#14532d', background:'#f0fdf4', padding:'8px 10px', borderRadius:6, border:'1px solid #86efac'}}>
+              <div style={{fontWeight:700, marginBottom:4}}>Selected location</div>
+              <div><strong>Name:</strong> {selectedLocationPlace.name || '—'}</div>
+              <div><strong>Address:</strong> {selectedLocationPlace.formatted_address || '—'}</div>
+              <div>
+                <strong>Coordinates:</strong>{' '}
+                {selectedLocationPlace.geometry?.location?.lat ? selectedLocationPlace.geometry.location.lat() : '—'},{' '}
+                {selectedLocationPlace.geometry?.location?.lng ? selectedLocationPlace.geometry.location.lng() : '—'}
+              </div>
+              <div><strong>Radius:</strong> {locationRadiusMeter || 0}m</div>
+              <div><strong>Unit No:</strong> {locationUnitNo || '—'}</div>
+              <div><strong>Comment:</strong> {locationComment || '—'}</div>
             </div>
           )}
           {locationSearchResults.length > 0 && (
@@ -2701,55 +2757,50 @@ export default function CalendarView({
             />
           </div>
           <div id="location-map" style={{width:'100%',height:220,margin:'8px 0',border:'1px solid #bbb'}}></div>
-          {/* Recent Locations Table */}
+          {/* Recent Locations List */}
           <div style={{marginTop:16}}>
-            <div style={{fontWeight:'bold', fontSize:16, marginBottom:6}}>Recent Locations (Last 10 Used)</div>
-            <div style={{overflowX:'auto'}}>
-              <table style={{width:'100%', borderCollapse:'collapse', fontSize:14}}>
-                <thead>
-                  <tr style={{background:'#eee'}}>
-                    <th style={{padding:'6px 8px', textAlign:'left'}}>Unit No</th>
-                    <th style={{padding:'6px 8px', textAlign:'left'}}>Address</th>
-                    <th style={{padding:'6px 8px', textAlign:'left'}}>Radius (m)</th>
-                    <th style={{padding:'6px 8px', textAlign:'left'}}>Comment</th>
-                    <th style={{padding:'6px 8px', textAlign:'center'}}>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentLocations.map((loc, idx) => (
-                    <tr key={loc.id}
-                      style={{
-                        background: idx % 2 === 0 ? '#f9f9f9' : '#fff'
-                      }}
-                    >
-                      <td style={{padding:'6px 8px'}}>{loc.unit_no || '-'}</td>
-                      <td style={{padding:'6px 8px'}}>{(loc.title + '\n' + loc.address) || '-'}</td>
-                      <td style={{padding:'6px 8px'}}>{loc.radius_meters || '-'}</td>
-                      <td style={{padding:'6px 8px'}}>{loc.comment || '-'}</td>
-                      <td style={{padding:'6px 8px', textAlign:'center', minWidth:90}}>
-                        <button
-                          className="btn"
-                          title="Use this location"
-                          style={{background:'#16a34a', color:'#fff', padding:'2px 8px', borderRadius:4, marginRight:6, fontSize:18, border:'none', cursor:'pointer'}}
-                          onClick={()=>handleLocationModalAdd(loc)}
-                        >✅</button>
-                        <button
-                          className="btn"
-                          title="Delete this location"
-                          style={{background:'#dc2626', color:'#fff', padding:'2px 8px', borderRadius:4, fontSize:18, border:'none', cursor:'pointer'}}
-                          disabled={locationLoadingDelete[loc.id]}
-                          onClick={()=>handleDeleteLocation(loc.id)}
-                        >❌</button>
-                      </td>
-                    </tr>
-                  ))}
-                  {recentLocations.length === 0 && (
-                    <tr>
-                      <td colSpan={5} style={{padding:'8px', textAlign:'center', color:'#888'}}>No locations found.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+            <div style={{fontWeight:'bold', fontSize:16, marginBottom:6}}>Recent Locations (Most Recent First)</div>
+            <div style={{maxHeight:240, overflowY:'auto', border:'1px solid #e5e7eb', borderRadius:6}}>
+              {recentLocations.map((loc, idx) => (
+                <div
+                  key={loc.id}
+                  style={{
+                    padding:'8px 10px',
+                    borderBottom:'1px solid #e5e7eb',
+                    background: idx % 2 === 0 ? '#f9fafb' : '#fff',
+                    display:'flex',
+                    justifyContent:'space-between',
+                    alignItems:'flex-start',
+                    gap:8
+                  }}
+                >
+                  <div style={{minWidth:0}}>
+                    <div style={{fontWeight:600}}>{loc.title || loc.address || '-'}</div>
+                    <div style={{fontSize:12, color:'#475569'}}>{loc.address || '-'}</div>
+                    <div style={{fontSize:12, color:'#64748b'}}>
+                      Unit: {loc.unit_no || '-'} | Radius: {loc.radius_meters || '-'}m | Comment: {loc.comment || '-'}
+                    </div>
+                  </div>
+                  <div style={{display:'flex', gap:6, minWidth:76}}>
+                    <button
+                      className="btn"
+                      title="Use this location"
+                      style={{background:'#16a34a', color:'#fff', padding:'2px 8px', borderRadius:4, fontSize:18, border:'none', cursor:'pointer'}}
+                      onClick={()=>handleLocationModalAdd(loc)}
+                    >✅</button>
+                    <button
+                      className="btn"
+                      title="Delete this location"
+                      style={{background:'#dc2626', color:'#fff', padding:'2px 8px', borderRadius:4, fontSize:18, border:'none', cursor:'pointer'}}
+                      disabled={locationLoadingDelete[loc.id]}
+                      onClick={()=>handleDeleteLocation(loc.id)}
+                    >❌</button>
+                  </div>
+                </div>
+              ))}
+              {recentLocations.length === 0 && (
+                <div style={{padding:'8px', textAlign:'center', color:'#888'}}>No locations found.</div>
+              )}
             </div>
           </div>
           <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
@@ -4209,7 +4260,7 @@ export default function CalendarView({
               <h3 style={{marginTop:24, marginBottom:12}}>Generated Recurring Shifts</h3>
               {childTasks && childTasks.length > 0 ? (
                 childTasks.map((c) => (
-                  <div className="shift-row" style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, marginBottom:12, background:'#fff', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                  <div key={c.id || `${c.start_time}-${c.end_time}-${c.task_name || ''}`} className="shift-row" style={{border:'1px solid #e6e6e6', padding:12, borderRadius:8, marginBottom:12, background:'#fff', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
                     <div style={{display:'flex', gap:12, alignItems:'center'}}>
                       <div style={{width:10, height:10, borderRadius:5, background:'#4a90e2'}}></div>
                       <div>

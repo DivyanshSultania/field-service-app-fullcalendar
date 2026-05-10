@@ -122,6 +122,129 @@ const computePayLengthMinutes = ({ start_time, end_time, started_at, stopped_at 
 	return null
 }
 
+const isNonEmptyString = value => typeof value === 'string' && value.trim() !== '';
+const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+const resolveTaskTimesFromLocalIntent = async ({
+	db,
+	taskId = null,
+	body,
+	timezoneName
+}) => {
+	const nextBody = { ...body };
+	const hasLocalIntent =
+		hasOwn(body, 'local_start_time') ||
+		hasOwn(body, 'local_end_time') ||
+		hasOwn(body, 'local_date') ||
+		hasOwn(body, 'local_end_date') ||
+		hasOwn(body, 'duration_minutes');
+
+	if (!hasLocalIntent) {
+		return nextBody;
+	}
+
+	let existingTask = null;
+	if (taskId) {
+		existingTask = await getSql(
+			db,
+			'SELECT start_time, end_time FROM tasks WHERE id = ?',
+			[taskId]
+		);
+	}
+
+	const existingStartLocal = existingTask?.start_time
+		? toZonedDateTime(existingTask.start_time, timezoneName)
+		: null;
+	const existingEndLocal = existingTask?.end_time
+		? toZonedDateTime(existingTask.end_time, timezoneName)
+		: null;
+	const existingEndDayOffset = existingStartLocal && existingEndLocal
+		? existingEndLocal.startOf('day').diff(existingStartLocal.startOf('day'), 'day')
+		: 0;
+
+	const startLocalFromBody = nextBody.start_time
+		? toZonedDateTime(nextBody.start_time, timezoneName)
+		: null;
+	const endLocalFromBody = nextBody.end_time
+		? toZonedDateTime(nextBody.end_time, timezoneName)
+		: null;
+
+	const baseStartDate = isNonEmptyString(nextBody.local_date)
+		? nextBody.local_date
+		: startLocalFromBody?.format('YYYY-MM-DD') ||
+			existingStartLocal?.format('YYYY-MM-DD') ||
+			null;
+
+	const explicitStartTime = isNonEmptyString(nextBody.local_start_time)
+		? nextBody.local_start_time
+		: null;
+	const explicitEndTime = isNonEmptyString(nextBody.local_end_time)
+		? nextBody.local_end_time
+		: null;
+
+	const derivedStartTime = startLocalFromBody?.format('HH:mm') || existingStartLocal?.format('HH:mm') || null;
+	const derivedEndTime = endLocalFromBody?.format('HH:mm') || existingEndLocal?.format('HH:mm') || null;
+
+	const startTimeText = explicitStartTime || derivedStartTime;
+	const endTimeText = explicitEndTime || derivedEndTime;
+
+	if (baseStartDate && startTimeText) {
+		const startUtc = combineLocalDateAndTimeToUtcIso({
+			dateValue: baseStartDate,
+			timeText: startTimeText,
+			timezoneName
+		});
+		if (startUtc) {
+			nextBody.start_time = startUtc;
+		}
+	}
+
+	const durationMinutesRaw = hasOwn(nextBody, 'duration_minutes')
+		? Number(nextBody.duration_minutes)
+		: null;
+	const hasDurationMinutes = Number.isFinite(durationMinutesRaw) && durationMinutesRaw > 0;
+
+	if (hasDurationMinutes && nextBody.start_time) {
+		const startLocal = toZonedDateTime(nextBody.start_time, timezoneName);
+		if (startLocal) {
+			nextBody.end_time = startLocal
+				.add(Math.floor(durationMinutesRaw), 'minute')
+				.utc()
+				.toISOString();
+		}
+	} else if (baseStartDate && endTimeText) {
+		let endDateText = isNonEmptyString(nextBody.local_end_date) ? nextBody.local_end_date : null;
+		if (!endDateText) {
+			if (explicitEndTime && startTimeText) {
+				endDateText = explicitEndTime < startTimeText
+					? dayjs.tz(baseStartDate, 'YYYY-MM-DD', timezoneName).add(1, 'day').format('YYYY-MM-DD')
+					: baseStartDate;
+			} else {
+				endDateText = dayjs.tz(baseStartDate, 'YYYY-MM-DD', timezoneName)
+					.add(existingEndDayOffset, 'day')
+					.format('YYYY-MM-DD');
+			}
+		}
+
+		const endUtc = combineLocalDateAndTimeToUtcIso({
+			dateValue: endDateText,
+			timeText: endTimeText,
+			timezoneName
+		});
+		if (endUtc) {
+			nextBody.end_time = endUtc;
+		}
+	}
+
+	delete nextBody.local_start_time;
+	delete nextBody.local_end_time;
+	delete nextBody.local_date;
+	delete nextBody.local_end_date;
+	delete nextBody.duration_minutes;
+
+	return nextBody;
+};
+
 /* -----------------------------
    🧪 Health
 ----------------------------- */
@@ -1107,6 +1230,12 @@ app.post('/api/tasks', authMiddleware, async context => {
 	try {
 		const id = uuidv4();
 		const body = await context.req.json();
+		const appTimezone = getRequestTimezone(context.req, context.env);
+		const normalizedBody = await resolveTaskTimesFromLocalIntent({
+			db: context.env.DB,
+			body,
+			timezoneName: appTimezone
+		});
 		const fields = [
 			'task_name', 'assignment_type', 'staff_id', 'team_id', 'client_id', 'location_id',
 			'start_time', 'end_time', 'publish', 'shift_instructions', 'color',
@@ -1118,7 +1247,7 @@ app.post('/api/tasks', authMiddleware, async context => {
 			'task_client_abn', 'task_client_acn', 'task_client_instruction',
 			'task_client_information', 'task_client_property_information'
 		];
-		const values = fields.map(k => body[k] || null);
+		const values = fields.map(k => normalizedBody[k] || null);
 
 		await runSql(
 			context.env.DB,
@@ -1128,8 +1257,8 @@ app.post('/api/tasks', authMiddleware, async context => {
 		);
 
 		// Handle task_team_members if provided
-		if (Array.isArray(body.task_team_members)) {
-			for (const staffId of body.task_team_members) {
+		if (Array.isArray(normalizedBody.task_team_members)) {
+			for (const staffId of normalizedBody.task_team_members) {
 				await runSql(
 					context.env.DB,
 					'INSERT INTO task_team_members (id, team_id, task_id, staff_id) VALUES (?, ?, ?, ?)',
@@ -1150,6 +1279,13 @@ app.put('/api/tasks/:id', authMiddleware, async context => {
 	try {
 		const body = await context.req.json();
 		const taskId = context.req.param().id;
+		const appTimezone = getRequestTimezone(context.req, context.env);
+		const normalizedBody = await resolveTaskTimesFromLocalIntent({
+			db: context.env.DB,
+			taskId,
+			body,
+			timezoneName: appTimezone
+		});
 
 		const fields = [
 			'task_name', 'assignment_type', 'staff_id', 'team_id', 'client_id', 'location_id',
@@ -1164,11 +1300,11 @@ app.put('/api/tasks/:id', authMiddleware, async context => {
 		];
 
 		// ✅ Only include fields that exist in request body
-		const updateFields = fields.filter(f => Object.prototype.hasOwnProperty.call(body, f));
+		const updateFields = fields.filter(f => Object.prototype.hasOwnProperty.call(normalizedBody, f));
 
 		if (updateFields.length > 0) {
 			const setClause = updateFields.map(f => `${f}=?`).join(', ');
-			const values = updateFields.map(f => body[f]);
+			const values = updateFields.map(f => normalizedBody[f]);
 
 			await runSql(
 				context.env.DB,
@@ -1178,7 +1314,7 @@ app.put('/api/tasks/:id', authMiddleware, async context => {
 		}
 
 		// ✅ Only reset team members if provided
-		if (Object.prototype.hasOwnProperty.call(body, 'task_team_members')) {
+		if (Object.prototype.hasOwnProperty.call(normalizedBody, 'task_team_members')) {
 
 			// Delete existing
 			await runSql(
@@ -1188,8 +1324,8 @@ app.put('/api/tasks/:id', authMiddleware, async context => {
 			);
 
 			// Insert new ones
-			if (Array.isArray(body.task_team_members)) {
-				for (const staffId of body.task_team_members) {
+			if (Array.isArray(normalizedBody.task_team_members)) {
+				for (const staffId of normalizedBody.task_team_members) {
 					if (staffId) {
 						await runSql(
 							context.env.DB,
